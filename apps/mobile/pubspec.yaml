@@ -1,0 +1,29 @@
+name: industrial_platform_mobile
+description: >
+  AI-powered Industrial Intelligence Platform — Flutter mobile client.
+  Module 1 ships app shell, networking, and a health-check screen only.
+publish_to: "none"
+version: 0.1.0+1
+
+environment:
+  sdk: ">=3.4.0 <4.0.0"
+  flutter: ">=3.22.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  http: ^1.2.2
+  flutter_dotenv: ^5.1.0
+  logger: ^2.4.0
+  flutter_secure_storage: ^9.2.2
+  provider: ^6.1.2
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - .env

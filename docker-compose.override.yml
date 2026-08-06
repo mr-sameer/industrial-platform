@@ -1,0 +1,28 @@
+# Automatically merged by `docker compose up` alongside docker-compose.yml.
+# Gives the web app hot-reload during local development by running the
+# Next.js dev server directly from source instead of the production
+# standalone build. Remove or rename this file to test the prod-like build.
+#
+# IMPORTANT — the `web-node-modules` named volume below persists across
+# `docker compose up --build` runs; rebuilding the image does NOT reset
+# it. If you add/remove a dependency in apps/web/package.json and the
+# container doesn't pick it up even after `--build`, run
+# `docker compose down -v` (or `docker volume rm
+# industrial-platform_web-node-modules`) once to clear the stale volume,
+# then `docker compose up --build` again. This is exactly what caused
+# ADR-0027's first fix attempt to still fail in practice — see
+# docs/adr/0028-docker-dev-script-must-not-require-pino-pretty.md.
+
+services:
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile.dev
+    volumes:
+      - ./apps/web:/repo/apps/web:delegated
+      - ./packages:/repo/packages:delegated
+      - web-node-modules:/repo/apps/web/node_modules
+    command: ["pnpm", "--filter", "web", "dev"]
+
+volumes:
+  web-node-modules:
