@@ -1,0 +1,12 @@
+# syntax=docker/dockerfile:1.7
+# Development-only image: installs deps and runs `next dev` with hot reload.
+# Not used in production — see Dockerfile for the multi-stage prod build.
+FROM node:20.11-bookworm-slim
+RUN corepack enable && corepack prepare pnpm@9.7.0 --activate
+WORKDIR /repo
+COPY package.json pnpm-workspace.yaml pnpm-lock.yaml* ./
+COPY packages ./packages
+COPY apps/web/package.json apps/web/package.json
+RUN pnpm install --filter web...
+EXPOSE 3000
+CMD ["pnpm", "--filter", "web", "dev"]

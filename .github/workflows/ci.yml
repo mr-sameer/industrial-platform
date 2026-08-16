@@ -1,0 +1,150 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main, develop]
+  push:
+    branches: [main, develop]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: "20.11.0"
+  PNPM_VERSION: "9.7.0"
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  web:
+    name: Web (lint, typecheck, test, build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "pnpm"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm turbo run lint --filter=web --filter=./packages/*
+
+      - name: Typecheck
+        run: pnpm turbo run typecheck --filter=web --filter=./packages/*
+
+      - name: Test
+        run: pnpm turbo run test --filter=web
+
+      - name: Build
+        run: pnpm turbo run build --filter=web
+
+  api:
+    name: API (lint, typecheck, test)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16.4-bookworm
+        env:
+          POSTGRES_USER: platform_user
+          POSTGRES_PASSWORD: test_password
+          POSTGRES_DB: industrial_platform_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U platform_user -d industrial_platform_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7.4-bookworm
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgresql+asyncpg://platform_user:test_password@localhost:5432/industrial_platform_test
+      DATABASE_URL_SYNC: postgresql+psycopg://platform_user:test_password@localhost:5432/industrial_platform_test
+      REDIS_URL: redis://localhost:6379/0
+      ENVIRONMENT: test
+    defaults:
+      run:
+        working-directory: apps/api
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: "pip"
+          cache-dependency-path: apps/api/requirements-dev.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Lint (ruff)
+        run: ruff check .
+
+      - name: Format check (ruff)
+        run: ruff format --check .
+
+      - name: Typecheck (mypy)
+        run: mypy app
+
+      - name: Test (pytest)
+        run: pytest --cov=app --cov-report=term-missing
+
+  mobile:
+    name: Mobile (analyze, test)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/mobile
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.22.0"
+          channel: "stable"
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Analyze
+        run: flutter analyze
+
+      - name: Test
+        run: flutter test --coverage
+
+  docker-build:
+    name: Docker image build check
+    runs-on: ubuntu-latest
+    needs: [web, api]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build API image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./apps/api
+          push: false
+          tags: industrial-platform-api:ci
+
+      - name: Build Web image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./apps/web/Dockerfile
+          push: false
+          tags: industrial-platform-web:ci

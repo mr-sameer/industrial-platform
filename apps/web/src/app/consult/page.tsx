@@ -1,0 +1,279 @@
+"use client";
+
+import { Sparkles } from "lucide-react";
+import Link from "next/link";
+import { useRef, useState, type FormEvent, type KeyboardEvent } from "react";
+
+import { FollowUpChips } from "@/components/consult/FollowUpChips";
+import { RecommendationCard } from "@/components/consult/RecommendationCard";
+import { RequirementCard } from "@/components/consult/RequirementCard";
+import { ThinkingIndicator } from "@/components/consult/ThinkingIndicator";
+import {
+  applyClarifyingAnswer,
+  computeConfidence,
+  extractFromText,
+  newRequirementObject,
+  nextClarifyingField,
+  searchFromRequirement,
+  type RequirementMatch,
+  type RequirementObject,
+} from "@/lib/requirement";
+
+/**
+ * ForgeX Requirement Intelligence — Phase 3B. Implements the
+ * conversation state machine from docs/product/
+ * phase-3a-ai-conversation-architecture.md Section 6, scoped to what
+ * that document marks as buildable today (Section 12): deterministic
+ * requirement extraction (lib/requirement.ts — keyword rules, never an
+ * LLM), the real GET /companies/search and public verification
+ * endpoints. No conversation persistence, no memory, no real LLM, no
+ * agents — all explicitly out of scope for this phase.
+ *
+ * Per this phase's own governing rule: the conversation exists to
+ * produce a RequirementObject (lib/requirement.ts) — every state
+ * transition below is really just "what does the next field on that
+ * object need," not conversation logic for its own sake.
+ */
+
+type Phase = "greeting" | "clarifying" | "summary" | "searching" | "results" | "no_results" | "error";
+type ClarifyField = "intent" | "productOrCategory" | "country" | "certifications";
+
+interface Message {
+  id: string;
+  role: "assistant" | "user";
+  text: string;
+  chips?: string[];
+}
+
+const QUESTION_CEILING = 4; // Phase 3A Section 3
+
+function questionForField(field: ClarifyField): { text: string; chips?: string[] } {
+  switch (field) {
+    case "intent":
+      return { text: "Who are you looking for?", chips: ["Manufacturer", "Supplier", "Distributor", "Exporter"] };
+    case "productOrCategory":
+      return { text: "What product or category are you sourcing?" };
+    case "country":
+      return { text: "Which country?", chips: ["India", "China", "Germany", "Any"] };
+    case "certifications":
+      return { text: "Any certifications required?", chips: ["ISO", "CE", "BIS", "None"] };
+  }
+}
+
+let messageIdCounter = 0;
+function nextId(): string {
+  messageIdCounter += 1;
+  return `m${messageIdCounter}`;
+}
+
+export default function ConsultPage() {
+  const [messages, setMessages] = useState<Message[]>([
+    {
+      id: nextId(),
+      role: "assistant",
+      text: "Tell me what your business needs — I'll help you find the right company.",
+    },
+  ]);
+  const [phase, setPhase] = useState<Phase>("greeting");
+  const [requirement, setRequirement] = useState<RequirementObject | null>(null);
+  const [pendingField, setPendingField] = useState<ClarifyField | null>(null);
+  const [questionsAsked, setQuestionsAsked] = useState(0);
+  const [inputValue, setInputValue] = useState("");
+  const [matches, setMatches] = useState<RequirementMatch[] | null>(null);
+  const [total, setTotal] = useState(0);
+  const bottomRef = useRef<HTMLDivElement>(null);
+
+  function scrollToBottom() {
+    setTimeout(() => bottomRef.current?.scrollIntoView({ behavior: "smooth" }), 50);
+  }
+
+  function addMessage(msg: Omit<Message, "id">) {
+    setMessages((prev) => [...prev, { ...msg, id: nextId() }]);
+    scrollToBottom();
+  }
+
+  function askNextOrSummarize(req: RequirementObject, questionsSoFar: number) {
+    const field = nextClarifyingField(req);
+    if (field === null || questionsSoFar >= QUESTION_CEILING) {
+      const withConfidence = { ...req, overallConfidence: computeConfidence(req) };
+      setRequirement(withConfidence);
+      setPhase("summary");
+      addMessage({ role: "assistant", text: "Here's what I understood:" });
+      return;
+    }
+    const question = questionForField(field);
+    setPendingField(field);
+    setRequirement(req);
+    setPhase("clarifying");
+    addMessage({ role: "assistant", text: question.text, chips: question.chips });
+  }
+
+  function handleFirstMessage(text: string) {
+    const req = extractFromText(newRequirementObject(text), text, true);
+    askNextOrSummarize(req, 0);
+  }
+
+  function handleClarifyingAnswer(answerText: string) {
+    if (!requirement || !pendingField) return;
+    const updated = applyClarifyingAnswer(requirement, pendingField, answerText);
+    const asked = questionsAsked + 1;
+    setQuestionsAsked(asked);
+    askNextOrSummarize(updated, asked);
+  }
+
+  function handleSubmit(e: FormEvent) {
+    e.preventDefault();
+    const text = inputValue.trim();
+    if (text.length === 0) return;
+    addMessage({ role: "user", text });
+    setInputValue("");
+    if (phase === "greeting") handleFirstMessage(text);
+    else if (phase === "clarifying") handleClarifyingAnswer(text);
+  }
+
+  function handleChipClick(value: string) {
+    addMessage({ role: "user", text: value });
+    if (phase === "clarifying") handleClarifyingAnswer(value);
+  }
+
+  async function handleSearch() {
+    if (!requirement) return;
+    setPhase("searching");
+    addMessage({ role: "assistant", text: "Searching…" });
+    try {
+      const { results, total: resultTotal } = await searchFromRequirement(requirement, 1, 10);
+      setMatches(results);
+      setTotal(resultTotal);
+      setPhase(results.length > 0 ? "results" : "no_results");
+    } catch {
+      setPhase("error");
+      addMessage({ role: "assistant", text: "Something went wrong on my end — let's try that again." });
+    }
+  }
+
+  function handleStartOver() {
+    setMessages([
+      {
+        id: nextId(),
+        role: "assistant",
+        text: "Tell me what your business needs — I'll help you find the right company.",
+      },
+    ]);
+    setPhase("greeting");
+    setRequirement(null);
+    setPendingField(null);
+    setQuestionsAsked(0);
+    setMatches(null);
+    setTotal(0);
+  }
+
+  function handleKeyDown(e: KeyboardEvent<HTMLInputElement>) {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      handleSubmit(e as unknown as FormEvent);
+    }
+  }
+
+  const showInput = phase === "greeting" || phase === "clarifying";
+
+  return (
+    <div className="flex min-h-screen flex-col bg-canvas">
+      <header className="sticky top-0 z-40 border-b border-border bg-canvas/90 px-4 py-4 backdrop-blur-sm sm:px-6">
+        <div className="mx-auto flex max-w-2xl items-center justify-between">
+          <Link href="/" className="font-display text-lg font-semibold tracking-tight text-ink">
+            Forge<span className="text-accent">X</span>
+          </Link>
+          <Link href="/discover" className="text-sm text-ink-muted hover:text-ink">
+            Search instead
+          </Link>
+        </div>
+      </header>
+
+      <main className="flex-1 px-4 py-8 sm:px-6">
+        <div className="mx-auto flex max-w-2xl flex-col gap-4">
+          {messages.map((msg) => (
+            <div key={msg.id}>
+              {msg.role === "assistant" ? (
+                <div className="flex items-start gap-2.5">
+                  <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-accent-subtle text-accent">
+                    <Sparkles size={13} aria-hidden />
+                  </div>
+                  <div className="max-w-md rounded-2xl rounded-tl-sm border border-border bg-surface px-4 py-2.5">
+                    <p className="text-sm text-ink">{msg.text}</p>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex justify-end">
+                  <p className="max-w-xs rounded-2xl rounded-br-sm bg-accent px-4 py-2.5 text-sm text-white">
+                    {msg.text}
+                  </p>
+                </div>
+              )}
+              {msg.chips && msg.id === messages[messages.length - 1]?.id && phase === "clarifying" && (
+                <div className="mt-2">
+                  <FollowUpChips options={msg.chips} onSelect={handleChipClick} />
+                </div>
+              )}
+            </div>
+          ))}
+
+          {phase === "searching" && <ThinkingIndicator />}
+
+          {phase === "summary" && requirement && (
+            <div className="ml-9 flex flex-col gap-3">
+              <RequirementCard requirement={requirement} />
+              <FollowUpChips options={["Search now", "Start over"]} onSelect={(v) => (v === "Search now" ? handleSearch() : handleStartOver())} />
+            </div>
+          )}
+
+          {phase === "no_results" && (
+            <div className="ml-9 flex flex-col gap-2">
+              <p className="text-sm text-ink-muted">
+                I couldn&apos;t find a company matching those requirements yet — ForgeX is growing daily.
+              </p>
+              <FollowUpChips options={["Start over"]} onSelect={handleStartOver} />
+            </div>
+          )}
+
+          {phase === "error" && <FollowUpChips options={["Start over"]} onSelect={handleStartOver} />}
+
+          {phase === "results" && matches && (
+            <div className="ml-9 flex flex-col gap-3">
+              <p className="text-sm text-ink-muted">{total} companies match your requirement.</p>
+              {matches.map((match) => (
+                <RecommendationCard key={match.company.id} match={match} />
+              ))}
+              <div>
+                <FollowUpChips options={["New search"]} onSelect={handleStartOver} />
+              </div>
+            </div>
+          )}
+
+          <div ref={bottomRef} />
+        </div>
+      </main>
+
+      {showInput && (
+        <form onSubmit={handleSubmit} className="sticky bottom-0 border-t border-border bg-canvas px-4 py-4 sm:px-6">
+          <div className="mx-auto flex max-w-2xl items-center gap-3 rounded-2xl border border-border-strong bg-canvas px-4 py-3 shadow-popover focus-within:border-accent focus-within:ring-4 focus-within:ring-accent/10">
+            <input
+              value={inputValue}
+              onChange={(e) => setInputValue(e.target.value)}
+              onKeyDown={handleKeyDown}
+              placeholder={phase === "greeting" ? "e.g. Need CNC machining in India" : "Type your answer…"}
+              aria-label="Your message"
+              className="flex-1 bg-transparent text-sm text-ink outline-none placeholder:text-ink-faint"
+            />
+            <button
+              type="submit"
+              disabled={inputValue.trim().length === 0}
+              className="rounded-full bg-accent px-4 py-1.5 text-sm font-medium text-white transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              Send
+            </button>
+          </div>
+        </form>
+      )}
+    </div>
+  );
+}

@@ -1,0 +1,115 @@
+# Local development stack for ForgeX.
+#
+# Usage:
+#   cp .env.example .env         # then adjust values as needed
+#   docker compose up --build
+#
+# Services:
+#   web      Next.js app          → http://localhost:3000
+#   api      FastAPI backend      → http://localhost:8000/docs
+#   postgres PostgreSQL 16        → localhost:5432
+#   redis    Redis 7              → localhost:6379
+
+name: industrial-platform
+
+services:
+  postgres:
+    image: postgres:16.4-bookworm
+    container_name: platform-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-platform_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change_me_locally}
+      POSTGRES_DB: ${POSTGRES_DB:-industrial_platform}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./infra/docker/postgres/initdb:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-platform_user} -d ${POSTGRES_DB:-industrial_platform}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks: [platform-net]
+
+  redis:
+    image: redis:7.4-bookworm
+    container_name: platform-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks: [platform-net]
+
+  api:
+    build:
+      context: ./apps/api
+      dockerfile: Dockerfile
+    container_name: platform-api
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-platform_user}:${POSTGRES_PASSWORD:-change_me_locally}@postgres:5432/${POSTGRES_DB:-industrial_platform}
+      DATABASE_URL_SYNC: postgresql+psycopg://${POSTGRES_USER:-platform_user}:${POSTGRES_PASSWORD:-change_me_locally}@postgres:5432/${POSTGRES_DB:-industrial_platform}
+      REDIS_URL: redis://redis:6379/0
+      UPLOAD_STORAGE_PATH: /app/uploads
+      UPLOAD_PUBLIC_BASE_URL: http://localhost:${API_PORT:-8000}/uploads
+    ports:
+      - "${API_PORT:-8000}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks: [platform-net]
+    volumes:
+      - ./apps/api:/app:delegated
+      # Module 3B: logo/cover/document uploads (LocalStorageBackend —
+      # see docs/adr/0029). A named volume, not a bind mount, so uploaded
+      # files survive container recreation without cluttering the repo
+      # checkout — this is explicitly a local-dev/self-hosted-deployment
+      # choice; a real multi-replica production deployment should swap
+      # in an S3Backend instead (see app.core.storage's docstring),
+      # since local disk isn't shared across replicas.
+      - uploads-data:/app/uploads
+    # Runs pending migrations before serving — convenient for local dev;
+    # a real deployment pipeline should run `alembic upgrade head` as an
+    # explicit, observable release step instead of hiding it in a command.
+    command: ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"]
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      args:
+        # Must match the runtime `environment:` value below exactly —
+        # see the Dockerfile's own comment on why this needs to be a
+        # build arg at all, not just a runtime env var.
+        NEXT_PUBLIC_API_BASE_URL: http://localhost:${API_PORT:-8000}
+    container_name: platform-web
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      NEXT_PUBLIC_API_BASE_URL: http://localhost:${API_PORT:-8000}
+    ports:
+      - "${WEB_PORT:-3000}:3000"
+    depends_on:
+      - api
+    networks: [platform-net]
+
+networks:
+  platform-net:
+    driver: bridge
+
+volumes:
+  postgres-data:
+  redis-data:
+  uploads-data:

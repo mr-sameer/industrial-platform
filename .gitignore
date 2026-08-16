@@ -1,0 +1,70 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Build outputs
+.next/
+out/
+dist/
+build/
+.turbo/
+*.egg-info/
+
+# Env files
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# Testing
+coverage/
+.pytest_cache/
+htmlcov/
+
+# IDE
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json.example
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Flutter
+apps/mobile/.dart_tool/
+apps/mobile/.flutter-plugins
+apps/mobile/.flutter-plugins-dependencies
+apps/mobile/build/
+apps/mobile/.pub-cache/
+apps/mobile/.pub/
+apps/mobile/**/ios/Pods/
+apps/mobile/**/ios/.symlinks/
+
+# Docker
+*.pid
+
+# Database
+*.sqlite3
+postgres-data/
+redis-data/
+
+# Local file uploads (Module 3B LocalStorageBackend) — see
+# docs/adr/0030-upload-storage-path-configuration-bug.md. Only exists
+# locally now that the default upload path is a real, writable
+# directory rather than the Docker-only /app/uploads.
+apps/api/uploads/
+
+# Playwright E2E test artifacts (apps/web/e2e/)
+apps/web/test-results/
+apps/web/playwright-report/
