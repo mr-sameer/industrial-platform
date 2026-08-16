@@ -21,13 +21,13 @@ dependencies = [
     "pillow==10.4.0",
     "python-multipart==0.0.9",
     "email-validator==2.2.0",
+    "httpx==0.27.0",  # real runtime dependency since Module 5C's MCADataGovInAdapter — not just a test-client dependency; found and fixed during Module 6B's environment setup (previously only listed under [project.optional-dependencies].dev, which would have made a real production deployment crash with ImportError)
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest==8.3.2",
     "pytest-asyncio==0.24.0",
-    "httpx==0.27.0",
     "ruff==0.5.7",
     "mypy==1.11.1",
     "types-passlib==1.7.7.20240819",
