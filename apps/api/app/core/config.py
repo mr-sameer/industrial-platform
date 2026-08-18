@@ -99,6 +99,16 @@ class Settings(BaseSettings):
     rate_limit_verify_email_per_ip: int = Field(default=10)
     rate_limit_verify_email_per_ip_window_seconds: int = Field(default=3600)
 
+    # ---- USA industrial data sources (Module 6D) ----
+    # Both already existed in .env before this field was added (real
+    # local credentials) — this just exposes them through the one
+    # sanctioned config path (see this module's own docstring: nothing
+    # else may call os.getenv directly). SEC EDGAR's public API needs
+    # no key, only a self-identifying User-Agent — see
+    # app.collectors.sec_edgar_adapter.
+    census_api_key: str | None = Field(default=None)
+    usitc_dataweb_api_token: str | None = Field(default=None)
+
     @property
     def cors_origins_list(self) -> list[str]:
         return [origin.strip() for origin in self.api_cors_origins.split(",") if origin.strip()]

@@ -32,6 +32,7 @@ from dataclasses import dataclass, field
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.collectors import field_profiles
 from app.models.entity_resolution_candidate import ResolutionState
 from app.models.source_registry import CollectionPolicyStatus, SourceRegistry
 from app.schemas.acquisition import AcquisitionJobCreate
@@ -178,8 +179,20 @@ async def run_pilot(
         created_by=created_by,
     )
 
+    # Module 6D Section 36: aggregate/trade sources (Census CBP, USITC
+    # DataWeb — no registered app.collectors.field_profiles entry, by
+    # design) never enter entity resolution at all, not even to
+    # generate a harmless NO_MATCH row. Company-identity sources
+    # (mca_data_gov_in, sec_edgar, manual_entry, mock) are unaffected —
+    # this is the single guard that keeps every collector_type on the
+    # one real pipeline (Section 85: "do not create a parallel
+    # pipeline"), not a second orchestration path for USA sources.
     er_summary = EntityResolutionSummary()
-    if job.status.value == "succeeded" and job.result_count > 0:
+    if (
+        job.status.value == "succeeded"
+        and job.result_count > 0
+        and field_profiles.has_profile(collector_type)
+    ):
         er_summary = await resolve_entities_for_job(db, job.id)
 
     return PilotRunReport(

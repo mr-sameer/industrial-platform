@@ -6,17 +6,27 @@ structured_file, user_submission) plug into — adding one is a single
 dict entry here, not a change anywhere in acquisition_service, which
 only ever depends on the SourceAdapter interface.
 
-Only "mock" is registered in this phase, matching this module's
-explicit scope: no real external collector exists yet.
+Module 6D adds the first real USA sources (sec_edgar, census_cbp,
+usitc_dataweb) plus manual_entry — exactly this extension point, zero
+change to acquisition_service itself, confirming Module 5B's own
+extensibility goal.
 """
 
 from app.collectors.base import SourceAdapter
+from app.collectors.census_cbp_adapter import CensusCBPAdapter
+from app.collectors.manual_entry_adapter import ManualEntryAdapter
 from app.collectors.mca_data_gov_in_adapter import MCADataGovInAdapter
 from app.collectors.mock_adapter import MockSourceAdapter
+from app.collectors.sec_edgar_adapter import SECEdgarAdapter
+from app.collectors.usitc_dataweb_adapter import USITCDataWebAdapter
 
 _ADAPTERS: dict[str, type[SourceAdapter]] = {
     MockSourceAdapter.adapter_type: MockSourceAdapter,
     MCADataGovInAdapter.adapter_type: MCADataGovInAdapter,
+    SECEdgarAdapter.adapter_type: SECEdgarAdapter,
+    CensusCBPAdapter.adapter_type: CensusCBPAdapter,
+    USITCDataWebAdapter.adapter_type: USITCDataWebAdapter,
+    ManualEntryAdapter.adapter_type: ManualEntryAdapter,
 }
 
 

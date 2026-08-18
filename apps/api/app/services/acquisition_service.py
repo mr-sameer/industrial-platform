@@ -251,6 +251,29 @@ async def get_job(db: AsyncSession, job_id: uuid.UUID) -> AcquisitionJob | None:
     return result.scalar_one_or_none()
 
 
+async def get_collector_type_for_observation(
+    db: AsyncSession, raw_observation_id: uuid.UUID
+) -> str | None:
+    """
+    Module 6D: "which collector produced this raw observation?" —
+    needed by app.services.entity_resolution_service and
+    app.services.company_promotion_service to pick the right
+    app.collectors.field_profiles.SourceFieldProfile, without adding a
+    column to RawObservation (frozen, Module 5A) or AcquisitionJobEvent
+    (frozen, Module 5B). A pure additive join over existing FKs — a
+    raw observation created outside any job (none exist yet, but
+    nothing prevents it) simply has no collector_type, which callers
+    must treat as "no field profile available," never as an error.
+    """
+    result = await db.execute(
+        select(AcquisitionJob.collector_type)
+        .join(AcquisitionJobEvent, AcquisitionJobEvent.job_id == AcquisitionJob.id)
+        .where(AcquisitionJobEvent.raw_observation_id == raw_observation_id)
+        .limit(1)
+    )
+    return result.scalar_one_or_none()
+
+
 async def list_jobs(
     db: AsyncSession,
     *,

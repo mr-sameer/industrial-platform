@@ -1,14 +1,16 @@
 """
-Company promotion service — Module 5C. The explicit, human-gated
-"review -> canonical Company" step (Section 5C.6/5C.7 of the approved
-architecture). Deliberately generic in its provenance-creation step —
-not MCA-specific — so any future source's raw observations can be
-promoted through the same path, matching this ticket's own instruction
-not to hard-code source-specific logic outside the adapter layer. The
-MCA-specific *field mapping* (which raw_content keys map to which
-Company fields) is the one genuinely source-specific piece, isolated
-into module-level constants below rather than spread through this
-function.
+Company promotion service — Module 5C, generalized in Module 6D. The
+explicit, human-gated "review -> canonical Company" step
+(Section 5C.6/5C.7 of the approved architecture). Deliberately generic
+in its control flow — not MCA-specific — so any future source's raw
+observations can be promoted through the same path, matching this
+ticket's own instruction not to hard-code source-specific logic
+outside the adapter layer. The source-specific *field mapping* (which
+raw_content keys map to which Company fields) now lives entirely in
+app.collectors.field_profiles, one SourceFieldProfile per
+collector_type — see that module's docstring for why this file used to
+hardcode MCA's field names directly here, and why Module 6D moved that
+mapping out rather than duplicating it a second time for SEC.
 
 REAL ARCHITECTURAL CONSTRAINT FOUND WHILE BUILDING THIS (documented
 here, and in this module's completion report, not silently worked
@@ -52,18 +54,22 @@ import uuid
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.collectors.normalization import (
-    SOURCE_COUNTRY,
-    attempt_city_from_address,
-    normalize_company_name,
-    parse_registration_date,
-)
+from app.collectors.field_profiles import SourceFieldProfile, resolve_profile_for_content
+from app.collectors.normalization import parse_registration_date
 from app.models.company import Company
 from app.models.provenance_record import EntityType, ExtractionMethod, ProvenanceStatus
 from app.models.raw_observation import RawObservation
 from app.schemas.company import CompanyCreate
 from app.schemas.provenance import ProvenanceRecordCreate
 from app.services import company_service, provenance_service
+
+__all__ = [
+    "DuplicateCinError",
+    "RawObservationNotFoundForPromotionError",
+    "MissingRequiredFieldError",
+    "find_existing_company_by_cin",
+    "promote_raw_observation_to_company",
+]
 
 
 class DuplicateCinError(Exception):
@@ -82,28 +88,6 @@ class MissingRequiredFieldError(Exception):
     Company creation genuinely requires (a name) — never silently
     defaulted or invented (architecture doc Section 4: "Do NOT invent
     missing values")."""
-
-
-# The one genuinely source-specific piece of this file — which
-# raw_content keys (app.collectors.mca_data_gov_in_adapter's confirmed
-# field names) map to which Company fields, mirroring
-# docs/product/phase-5c-india-company-data-source-architecture.md
-# Section 4 exactly. Fields with no Company equivalent are deliberately
-# absent from the "direct" set — they still get a ProvenanceRecord (see
-# _EXTRA_OBSERVED_FIELDS below), just not a Company column, per "Do NOT
-# silently discard provenance."
-_MCA_DIRECT_FIELDS = ("cin", "company_name", "registered_state", "principal_business_activity")
-_EXTRA_OBSERVED_FIELDS = (
-    "company_status",
-    "company_class",
-    "company_category",
-    "sub_category",
-    "authorized_capital",
-    "paid_up_capital",
-    "date_of_registration",
-    "registrar_of_companies",
-    "registered_office_address",
-)
 
 
 async def find_existing_company_by_cin(db: AsyncSession, cin: str) -> Company | None:
@@ -137,37 +121,42 @@ async def promote_raw_observation_to_company(
     acquired data — always explicit (a human reviewer's own API call,
     never triggered automatically by acquisition itself), always after
     the CIN duplicate check below.
+
+    Module 6D: field extraction is now per-collector_type (see
+    app.collectors.field_profiles) rather than hardcoded to MCA's field
+    names — this function's own control flow (CIN check -> required-name
+    check -> create -> set cin/registration_date -> provenance) is
+    otherwise unchanged from Module 5C.
     """
     observation = await _get_raw_observation(db, raw_observation_id)
     content = observation.raw_content
+    profile = await resolve_profile_for_content(db, raw_observation_id, content)
+    identity = profile.extract(content)
 
-    cin = _get_str(content, "cin")
-    if cin:
-        existing = await find_existing_company_by_cin(db, cin)
+    if identity.strong_id:
+        existing = await find_existing_company_by_cin(db, identity.strong_id)
         if existing is not None:
-            raise DuplicateCinError(f"cin={cin} already exists as company_id={existing.id}")
+            raise DuplicateCinError(
+                f"cin={identity.strong_id} already exists as company_id={existing.id}"
+            )
 
-    raw_name = _get_str(content, "company_name")
-    if not raw_name:
+    if not identity.name:
         raise MissingRequiredFieldError(
-            "No 'company_name' in this raw observation — cannot create a Company without a name."
+            "No company name in this raw observation — cannot create a Company without a name."
         )
-    normalized_name = normalize_company_name(raw_name)
-
-    registered_state = _get_str(content, "registered_state")
-    address = _get_str(content, "registered_office_address")
-    city = attempt_city_from_address(address, known_state=registered_state)
 
     payload = CompanyCreate(
-        # MCA's dataset has one name field, not a separate trade name —
-        # using it for both is accurate (it IS the registered legal
-        # name), not a placeholder guess (architecture doc Section 4).
-        name=normalized_name,
-        legal_name=normalized_name,
-        industry=_get_str(content, "principal_business_activity"),
-        country=SOURCE_COUNTRY,
-        state=registered_state,
-        city=city,
+        # Every profile's `name` is already the entity's registered/
+        # legal name (not a separate trade name) — using it for both
+        # Company fields is accurate, not a placeholder guess
+        # (mirrors MCA's own Section 4 reasoning, generalized).
+        name=identity.name,
+        legal_name=identity.name,
+        industry=identity.industry,
+        country=identity.country,
+        state=identity.state,
+        city=identity.city,
+        website=identity.website,
     )
 
     company = await company_service.create_company(db, owner_user_id=reviewer_id, payload=payload)
@@ -176,28 +165,31 @@ async def promote_raw_observation_to_company(
     # (Module 3A's own schema, unmodified) — set directly on the
     # already-created ORM row rather than changing that schema's
     # contract, which would be exactly the kind of Company-domain
-    # change this module's own instructions prohibit.
-    if cin:
-        company.cin = cin
+    # change this module's own instructions prohibit. Only ever set
+    # from identity.strong_id — never from a non-CIN identifier (see
+    # app.collectors.field_profiles's own docstring on why SEC's CIK
+    # is deliberately never written here).
+    if identity.strong_id:
+        company.cin = identity.strong_id
     registration_date = parse_registration_date(_get_str(content, "date_of_registration"))
     if registration_date:
         company.business_registration_date = registration_date
     await db.commit()
     await db.refresh(company)
 
-    await _create_provenance_for_promoted_company(db, company, observation)
+    await _create_provenance_for_promoted_company(db, company, observation, profile)
     return company
 
 
 async def _create_provenance_for_promoted_company(
-    db: AsyncSession, company: Company, observation: RawObservation
+    db: AsyncSession, company: Company, observation: RawObservation, profile: SourceFieldProfile
 ) -> None:
     """
     Creates a ProvenanceRecord for every field present in the raw
     observation — both the ones that made it onto a real Company
-    column (_MCA_DIRECT_FIELDS, extraction_method=rule_based, a direct
-    or lightly-transformed mapping) and the ones that don't
-    (_EXTRA_OBSERVED_FIELDS, extraction_method=manual/observed,
+    column (profile.direct_fields, extraction_method=rule_based, a
+    direct or lightly-transformed mapping) and the ones that don't
+    (profile.extra_fields, extraction_method=manual/observed,
     preserved for traceability per "Do NOT silently discard
     provenance" even though no Company column exists for them yet).
     Every record is created at status=observed or extracted — NEVER
@@ -207,11 +199,11 @@ async def _create_provenance_for_promoted_company(
     """
     content = observation.raw_content
 
-    for field_name in (*_MCA_DIRECT_FIELDS, *_EXTRA_OBSERVED_FIELDS):
+    for field_name in (*profile.direct_fields, *profile.extra_fields):
         value = _get_str(content, field_name)
         if not value:
             continue
-        is_direct = field_name in _MCA_DIRECT_FIELDS
+        is_direct = field_name in profile.direct_fields
         await provenance_service.create_provenance_record(
             db,
             ProvenanceRecordCreate(

@@ -1,9 +1,13 @@
 """
-Entity resolution service — Module 5D. Orchestrates candidate
-generation (persisting app.entity_resolution.matching's output) and
-human decisions. Reuses Module 5A's provenance_service and Module 5C's
-company_promotion_service completely unchanged — no Company-domain or
-provenance logic is duplicated here.
+Entity resolution service — Module 5D, field extraction generalized in
+Module 6D. Orchestrates candidate generation (persisting
+app.entity_resolution.matching's output) and human decisions. Reuses
+Module 5A's provenance_service and Module 5C's company_promotion_service
+— no Company-domain or provenance logic is duplicated here. Field
+extraction from a raw observation now goes through
+app.collectors.field_profiles.resolve_profile_for_content (lineage-
+first, one profile per collector_type) instead of the MCA-only
+hardcoded keys this file used before Module 6D.
 
 DATA TRUST / SAFETY RULE, enforced directly: `decide()` is the ONLY
 function in this file that touches canonical data, and it only ever
@@ -20,7 +24,7 @@ from datetime import UTC, datetime
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.collectors.normalization import attempt_city_from_address
+from app.collectors.field_profiles import resolve_profile_for_content
 from app.entity_resolution.matching import generate_candidate
 from app.models.company import Company
 from app.models.entity_resolution_candidate import (
@@ -31,7 +35,6 @@ from app.models.entity_resolution_candidate import (
 from app.models.provenance_record import EntityType, ExtractionMethod, ProvenanceStatus
 from app.schemas.provenance import ProvenanceRecordCreate
 from app.services import company_promotion_service, provenance_service
-from app.services.company_promotion_service import _EXTRA_OBSERVED_FIELDS, _MCA_DIRECT_FIELDS
 
 
 class RawObservationNotFoundError(Exception):
@@ -74,23 +77,25 @@ async def generate_candidate_for_observation(
     if observation is None:
         raise RawObservationNotFoundError(str(raw_observation_id))
 
-    content = observation.raw_content
-    cin = _get_str(content, "cin")
-    company_name = _get_str(content, "company_name")
-    registered_state = _get_str(content, "registered_state")
-    address = _get_str(content, "registered_office_address")
-    city = attempt_city_from_address(address, known_state=registered_state)
-    website = _get_str(
-        content, "website"
-    )  # not present in MCA data today; reused generically for any future source
+    # Module 6D: field extraction is now per-collector_type (see
+    # app.collectors.field_profiles) rather than the MCA-only hardcoded
+    # keys this function used before Module 6D existed. A source with
+    # no registered profile (Census CBP, USITC DataWeb — aggregate/trade
+    # data, never company identity) correctly raises here rather than
+    # being silently misread as company fields — see
+    # field_profiles.resolve_profile_for_content's own docstring for
+    # the lineage-first resolution rule (and its narrow legacy-test
+    # compatibility shim).
+    profile = await resolve_profile_for_content(db, raw_observation_id, observation.raw_content)
+    identity = profile.extract(observation.raw_content)
 
     result = await generate_candidate(
         db,
-        cin=cin,
-        company_name=company_name,
-        city=city,
-        state=registered_state,
-        website=website,
+        cin=identity.strong_id,
+        company_name=identity.name,
+        city=identity.city,
+        state=identity.state,
+        website=identity.website,
         external_identifier=observation.external_reference,
     )
 
@@ -213,12 +218,16 @@ async def _attach_observation_to_existing_company(
     )
     company = company_result.scalar_one()
 
+    profile = await resolve_profile_for_content(
+        db, candidate.raw_observation_id, observation.raw_content
+    )
+
     content = observation.raw_content
-    for field_name in (*_MCA_DIRECT_FIELDS, *_EXTRA_OBSERVED_FIELDS):
+    for field_name in (*profile.direct_fields, *profile.extra_fields):
         value = _get_str(content, field_name)
         if not value:
             continue
-        is_direct = field_name in _MCA_DIRECT_FIELDS
+        is_direct = field_name in profile.direct_fields
         await provenance_service.create_provenance_record(
             db,
             ProvenanceRecordCreate(
