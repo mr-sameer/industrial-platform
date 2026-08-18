@@ -13,12 +13,16 @@ taxonomy data, so the closer precedent is session ownership
 Product's public GET. See this module's own completion report for why
 anonymous submission was considered and deliberately not built here.
 
-Deliberately does NOT expose a /matches route — matching belongs to
-Phase 7A-2, a distinct future module (see app.services.requirement_service's
-own docstring on the boundary this maintains).
+GET /{requirement_id}/matches (Module 7A-2, additive) is ownership-scoped
+identically to GET /{requirement_id} — same 404-not-403 policy, same
+CurrentUser gate. See app.services.requirement_matching_service for the
+actual scoring/ranking logic; this route only translates its dataclasses
+into the approved response contract
+(docs/product/phase-7a-requirement-intelligence-architecture.md Section 13).
 """
 
 import uuid
+from typing import cast
 
 from fastapi import APIRouter, HTTPException, status
 
@@ -27,11 +31,24 @@ from app.core.responses import ApiSuccess, success_response
 from app.db.session import DbSession
 from app.models.requirement import Requirement
 from app.schemas.requirement import (
+    CriterionValue,
     RequirementCreate,
     RequirementDetail,
+    RequirementMatchCandidate,
+    RequirementMatchCategorySignal,
+    RequirementMatchCertificationSignal,
+    RequirementMatchCompanySummary,
+    RequirementMatchCriterionSignal,
+    RequirementMatchesResponse,
+    RequirementMatchLocationSignal,
+    RequirementMatchProductSummary,
+    RequirementMatchScoreBreakdownEntry,
+    RequirementMatchSignals,
+    RequirementMatchTrustSignal,
     RequirementSpecificationCriterionPublic,
 )
-from app.services import requirement_service
+from app.services import requirement_matching_service, requirement_service
+from app.services.requirement_matching_service import MatchCandidate
 from app.services.requirement_service import (
     CategoryNotFoundError,
     CategoryRequiredForCriteriaError,
@@ -148,3 +165,117 @@ async def get_requirement(
             },
         )
     return success_response(_to_detail(requirement))
+
+
+def _to_match_dto(candidate: MatchCandidate, rank: int) -> RequirementMatchCandidate:
+    """
+    Explicitly constructs a RequirementMatchCandidate from
+    requirement_matching_service's dataclasses — mirrors _to_detail's
+    own reasoning. `category` is always matched=True here: every
+    candidate reaching this point was already retrieved by a
+    category-filtered query (_retrieve_candidates), so category is a
+    hard retrieval filter, not a scored signal — there is no case where
+    a surviving candidate has matched=False.
+    """
+    return RequirementMatchCandidate(
+        offering_id=candidate.offering.id,
+        rank=rank,
+        score=candidate.score,
+        company=RequirementMatchCompanySummary(
+            id=candidate.company.id,
+            name=candidate.company.name,
+            slug=candidate.company.slug,
+            verification_level=candidate.trust.level.value,
+        ),
+        product=RequirementMatchProductSummary(
+            id=candidate.product.id,
+            name=candidate.product.name,
+            slug=candidate.product.slug,
+        ),
+        signals=RequirementMatchSignals(
+            category=RequirementMatchCategorySignal(matched=True),
+            criteria=[
+                RequirementMatchCriterionSignal(
+                    specification_id=c.specification_id,
+                    specification_name=c.specification_name,
+                    operator=c.operator,
+                    # CriterionSignal.requirement_value is typed `object` at
+                    # the service layer (it passes through
+                    # RequirementSpecificationCriterion.value, genuinely
+                    # dynamic JSONB) — this cast only narrows the type for
+                    # the response schema; the value itself was already
+                    # validated into this exact shape by
+                    # RequirementSpecificationCriterionInput at creation
+                    # time (app.schemas.requirement), so no runtime check
+                    # is being skipped here.
+                    requirement_value=cast(CriterionValue, c.requirement_value),
+                    candidate_value=c.candidate_value,
+                    status=c.status,
+                )
+                for c in candidate.criteria
+            ],
+            location=RequirementMatchLocationSignal(
+                requested=candidate.location.requested,
+                candidate=candidate.location.candidate,
+                points_earned=candidate.location.points_earned,
+                points_possible=candidate.location.points_possible,
+            ),
+            certifications=RequirementMatchCertificationSignal(
+                requested=candidate.certifications.requested,
+                evidence_found=candidate.certifications.evidence_found,
+                points_earned=candidate.certifications.points_earned,
+                points_possible=candidate.certifications.points_possible,
+                confidence=candidate.certifications.confidence,
+                note=candidate.certifications.note,
+            ),
+            trust_tier=RequirementMatchTrustSignal(
+                level=candidate.trust.level.value,
+                points_earned=candidate.trust.points_earned,
+                points_possible=candidate.trust.points_possible,
+            ),
+        ),
+        score_breakdown=[
+            RequirementMatchScoreBreakdownEntry(
+                signal=entry.signal, weight=entry.weight, points_earned=entry.points_earned
+            )
+            for entry in candidate.score_breakdown
+        ],
+    )
+
+
+@router.get("/{requirement_id}/matches", response_model=ApiSuccess[RequirementMatchesResponse])
+async def get_requirement_matches(
+    requirement_id: uuid.UUID, db: DbSession, current_user: CurrentUser
+) -> ApiSuccess[RequirementMatchesResponse]:
+    """
+    Ownership-scoped identically to GET /{requirement_id} — same
+    404-not-403 policy for a requirement that isn't the caller's own.
+    No pagination params, no output cap beyond the 500-candidate
+    retrieval ceiling — Option B, per the approved 7A-2 contract.
+    """
+    requirement = await requirement_service.get_requirement_for_user(
+        db, requirement_id, current_user.id
+    )
+    if requirement is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "code": "REQUIREMENT_NOT_FOUND",
+                "message": "No requirement with that ID exists.",
+            },
+        )
+    result = await requirement_matching_service.compute_matches(db, requirement)
+    matches = [
+        _to_match_dto(candidate, rank) for rank, candidate in enumerate(result.candidates, start=1)
+    ]
+    return success_response(
+        RequirementMatchesResponse(
+            requirement_id=requirement.id,
+            status=result.status,
+            total_candidates_considered=result.total_candidates_considered,
+            more_candidates_may_exist=result.more_candidates_may_exist,
+            excluded_for_hard_criteria=result.excluded_for_hard_criteria,
+            returned_count=len(matches),
+            matches=matches,
+        )
+    )

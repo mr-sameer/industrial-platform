@@ -1,6 +1,8 @@
 """
-Pydantic schemas — Module 7A-1 (Requirement Intelligence foundation).
-Mirrors app/schemas/product.py's conventions (from_attributes=True for
+Pydantic schemas — Module 7A-1 (Requirement Intelligence foundation) and
+Module 7A-2 (Requirement Matching & Ranking Engine, additive — see the
+"---- Matches (Module 7A-2) ----" section below). Mirrors
+app/schemas/product.py's conventions (from_attributes=True for
 ORM-backed read models, a manually-built response for fields not
 directly on the ORM row — see app.api.v1.requirements._to_detail for
 why, same reason as product.py's own _to_detail).
@@ -109,3 +111,102 @@ class RequirementDetail(BaseModel):
     updated_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+# ---- Matches (Module 7A-2) ----
+# Every class below is constructed explicitly from
+# app.services.requirement_matching_service's dataclasses by
+# app.api.v1.requirements._to_match_dto — never from_attributes=True
+# over the ORM directly, matching this file's own established pattern.
+# Field shapes mirror
+# docs/product/phase-7a-requirement-intelligence-architecture.md
+# Section 13 exactly, resolved with the Option B decision: NO
+# pagination, NO output cap beyond the existing 500-candidate
+# retrieval ceiling — `matches` is every surviving candidate from the
+# bounded working set, and `returned_count == len(matches)`.
+
+
+class RequirementMatchCategorySignal(BaseModel):
+    matched: bool
+
+
+class RequirementMatchCriterionSignal(BaseModel):
+    specification_id: uuid.UUID
+    specification_name: str
+    operator: CriterionOperator
+    requirement_value: CriterionValue
+    # ProductAttribute.value is genuinely a plain string in the
+    # database (app.models.product_attribute's own EAV design,
+    # app.schemas.product.ProductAttributePublic's own precedent) —
+    # this is the real canonical type, not a convenience stringification.
+    candidate_value: str | None
+    status: str
+
+
+class RequirementMatchLocationSignal(BaseModel):
+    requested: dict[str, str | None]
+    candidate: dict[str, str | None]
+    points_earned: float
+    points_possible: float
+
+
+class RequirementMatchCertificationSignal(BaseModel):
+    requested: list[str]
+    evidence_found: list[str]
+    points_earned: float
+    points_possible: float
+    confidence: str
+    note: str | None
+
+
+class RequirementMatchTrustSignal(BaseModel):
+    level: str
+    points_earned: float
+    points_possible: float
+
+
+class RequirementMatchSignals(BaseModel):
+    category: RequirementMatchCategorySignal
+    criteria: list[RequirementMatchCriterionSignal]
+    location: RequirementMatchLocationSignal
+    certifications: RequirementMatchCertificationSignal
+    trust_tier: RequirementMatchTrustSignal
+
+
+class RequirementMatchScoreBreakdownEntry(BaseModel):
+    signal: str
+    weight: float
+    points_earned: float
+
+
+class RequirementMatchCompanySummary(BaseModel):
+    id: uuid.UUID
+    name: str
+    slug: str
+    verification_level: str
+
+
+class RequirementMatchProductSummary(BaseModel):
+    id: uuid.UUID
+    name: str
+    slug: str
+
+
+class RequirementMatchCandidate(BaseModel):
+    offering_id: uuid.UUID
+    rank: int
+    score: float
+    company: RequirementMatchCompanySummary
+    product: RequirementMatchProductSummary
+    signals: RequirementMatchSignals
+    score_breakdown: list[RequirementMatchScoreBreakdownEntry]
+
+
+class RequirementMatchesResponse(BaseModel):
+    requirement_id: uuid.UUID
+    status: str  # "computed" | "category_required"
+    total_candidates_considered: int
+    more_candidates_may_exist: bool
+    excluded_for_hard_criteria: int
+    returned_count: int
+    matches: list[RequirementMatchCandidate]
