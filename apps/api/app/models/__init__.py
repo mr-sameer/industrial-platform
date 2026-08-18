@@ -36,6 +36,12 @@ from app.models.provenance_record import (
 )
 from app.models.raw_observation import RawObservation
 from app.models.refresh_token import RefreshToken
+from app.models.requirement import (
+    CriterionOperator,
+    Requirement,
+    RequirementSpecificationCriterion,
+    RequirementStatus,
+)
 from app.models.session import Session, SessionRevokedReason
 from app.models.source_registry import (
     CollectionMethod,
@@ -97,6 +103,10 @@ __all__ = [
     "RawObservation",
     "RefreshToken",
     "RelationshipType",
+    "CriterionOperator",
+    "Requirement",
+    "RequirementSpecificationCriterion",
+    "RequirementStatus",
     "ResolutionDecision",
     "ResolutionState",
     "RiskTier",

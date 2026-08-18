@@ -41,6 +41,7 @@ from app.api.v1.products import categories_router
 from app.api.v1.products import router as products_router
 from app.api.v1.provenance import router as provenance_router
 from app.api.v1.provenance import sources_router
+from app.api.v1.requirements import router as requirements_router
 from app.core.config import get_settings
 from app.core.logging import configure_logging, get_logger
 from app.core.middleware import RequestContextMiddleware
@@ -313,6 +314,7 @@ def create_app() -> FastAPI:
     app.include_router(entity_resolution_router, prefix="/api/v1")
     app.include_router(data_quality_router, prefix="/api/v1")
     app.include_router(graph_router, prefix="/api/v1")
+    app.include_router(requirements_router, prefix="/api/v1")
 
     # Serves whatever app.core.storage.LocalStorageBackend writes — see
     # that module's docstring. os.makedirs guards against a fresh
