@@ -28,6 +28,14 @@ This adapter follows the SourceAdapter contract exactly as Module 5B
 defined it (app/collectors/base.py) — nothing here is hard-coded into
 acquisition_service.py; it plugs into the same
 app.collectors.registry mechanism as MockSourceAdapter.
+
+Module 8A: added indian_foreign_classification/nic_code/
+industrial_classification field extraction — fields confirmed present
+on the specific resource identified for this pilot, not part of
+Module 5C's original field list. Raw capture only, same as every
+other field here; see app.collectors.field_profiles for why these are
+registered as extra_fields (provenance-only) and never become a
+Capability/Offering/supplier claim.
 """
 
 from __future__ import annotations
@@ -79,6 +87,27 @@ _FIELD_KEY_VARIANTS: dict[str, list[str]] = {
         "Registered Office Address",
         "registered_office_address",
         "RegisteredOfficeAddress",
+    ],
+    # Module 8A additions — confirmed present on the specific resource
+    # identified for this pilot (not part of Module 5C's original
+    # research pass, see docs/product/phase-5c-india-company-data-source-architecture.md
+    # Section 2's field list). Same defensive multi-casing treatment as
+    # every field above; exact casing still unconfirmed against a live
+    # response (see module docstring) — this is raw capture only, see
+    # app.collectors.field_profiles for why these never become a
+    # Capability/Offering.
+    "indian_foreign_classification": [
+        "Company Indian/Foreign Company",
+        "CompanyIndianForeignCompany",
+        "Indian/Foreign Company",
+        "indian_foreign_company",
+    ],
+    "nic_code": ["NIC Code", "nic_code", "NICCode", "Nic Code"],
+    "industrial_classification": [
+        "Company Industrial Classification",
+        "CompanyIndustrialClassification",
+        "Industrial Classification",
+        "industrial_classification",
     ],
 }
 
@@ -203,6 +232,12 @@ class MCADataGovInAdapter(SourceAdapter):
             "registrar_of_companies": _extract_field(record, "registrar_of_companies"),
             "principal_business_activity": _extract_field(record, "principal_business_activity"),
             "registered_office_address": _extract_field(record, "registered_office_address"),
+            # Module 8A additions — see _FIELD_KEY_VARIANTS above.
+            "indian_foreign_classification": _extract_field(
+                record, "indian_foreign_classification"
+            ),
+            "nic_code": _extract_field(record, "nic_code"),
+            "industrial_classification": _extract_field(record, "industrial_classification"),
         }
         return CollectedItem(
             raw_content=raw_content,

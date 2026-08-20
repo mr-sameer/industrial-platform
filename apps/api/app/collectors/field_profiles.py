@@ -119,6 +119,16 @@ _MCA_PROFILE = SourceFieldProfile(
         "date_of_registration",
         "registrar_of_companies",
         "registered_office_address",
+        # Module 8A additions. Deliberately extra_fields, never
+        # direct_fields: no Company column represents NIC/industrial
+        # classification, and per this pilot's explicit CRITICAL
+        # constraint, NIC classification must never be treated as
+        # evidence of a ForgeX Capability/Offering — it becomes a
+        # provenance-only, human-reviewable observation like every
+        # other extra_field here, nothing more.
+        "indian_foreign_classification",
+        "nic_code",
+        "industrial_classification",
     ),
     extract=_extract_mca,
 )

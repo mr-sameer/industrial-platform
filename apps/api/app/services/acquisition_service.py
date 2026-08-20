@@ -14,18 +14,38 @@ create_provenance_record / verify_provenance_record) — deliberately
 not invoked anywhere in this file.
 
 IDEMPOTENCY STRATEGY (documented here, not just implemented): the key
-is source_id + external_identifier when the adapter provides one —
-this is the "stable external identifier" the ticket asks for, and
-matches how a real source would naturally dedupe (the same URL, the
-same registry record ID, collected again, is unambiguously "the same
-thing"). Only when an adapter has no natural external identifier does
-this fall back to source_id + content_hash — content_hash ALONE,
-un-scoped to a source, is deliberately never used as a key: two
-different sources could coincidentally produce byte-identical content
-for two genuinely different real-world records (e.g. two companies
-both submitting an empty/templated field), and a global hash key would
-incorrectly treat them as the same observation. Scoping to source_id
-first is what makes this safe.
+is source_id + external_identifier + content_hash when the adapter
+provides an external_identifier — this is the "stable external
+identifier" the ticket asks for, and matches how a real source would
+naturally dedupe (the same URL, the same registry record ID, collected
+again with the SAME content, is unambiguously "the same thing"). Only
+when an adapter has no natural external identifier does this fall back
+to source_id + content_hash alone — content_hash ALONE, un-scoped to a
+source, is deliberately never used as a key: two different sources
+could coincidentally produce byte-identical content for two genuinely
+different real-world records (e.g. two companies both submitting an
+empty/templated field), and a global hash key would incorrectly treat
+them as the same observation. Scoping to source_id first is what makes
+this safe.
+
+Module 8A: content_hash was added to the external_identifier branch's
+match condition (previously external_identifier alone). Same
+identifier, DIFFERENT content — e.g. an MCA company's registered
+status changing between two pulls of the same CIN — is now a genuine
+new RawObservation, never silently skipped as a duplicate, matching
+RawObservation's own documented principle ("a re-observation is always
+a new row, never a mutation of an old one" — see that model's
+docstring). The old row is never touched; the new row captures the
+changed state as its own immutable snapshot. Everything downstream of
+this already handles a second observation for the same CIN correctly
+without further changes: app.entity_resolution.matching's CIN check
+produces a fresh AUTO_MATCH candidate against the existing Company,
+and app.services.entity_resolution_service.decide's CONFIRM_MATCH path
+creates new ProvenanceRecords on that existing company — where
+provenance_service's own, unmodified conflict detection automatically
+flags a DataConflict for any field (e.g. company_status) that
+disagrees with what was previously observed, never silently
+overwriting it.
 
 RETRY STRATEGY (documented here): RetryableCollectorError triggers up
 to MAX_RETRIES additional attempts (bounded, never infinite) with the
@@ -71,12 +91,15 @@ async def _find_existing_observation(
 ) -> RawObservation | None:
     """The idempotency check — see this module's own docstring for the
     full strategy and why content_hash is never used un-scoped to a
-    source."""
+    source. A record only counts as a repeat when BOTH the identifier
+    AND the content match (Module 8A) — same identifier, changed
+    content, is a new observation, not a skip."""
     if item.external_identifier is not None:
         result = await db.execute(
             select(RawObservation).where(
                 RawObservation.source_id == source_id,
                 RawObservation.external_reference == item.external_identifier,
+                RawObservation.content_hash == item.content_hash,
             )
         )
     else:

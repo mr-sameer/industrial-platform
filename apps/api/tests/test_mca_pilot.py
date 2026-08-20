@@ -21,16 +21,21 @@ from tests.test_acquisition import _register_admin
 from tests.test_companies import _auth_headers
 
 
-def _real_shaped_record(cin: str, name: str, state: str = "Maharashtra") -> dict:
+def _real_shaped_record(
+    cin: str, name: str, state: str = "Maharashtra", company_status: str = "Active"
+) -> dict:
     """One record, using the exact field-name casing/shape confirmed
     from data.gov.in's own catalog description — a realistic fixture,
     not a fabricated shape, given this sandbox cannot reach the live
     API to capture an actual response (documented limitation, not
-    hidden)."""
+    hidden). Module 8A additions (Company Indian/Foreign Company, NIC
+    Code, Company Industrial Classification) use the same
+    "confirmed-fields, unconfirmed-casing" status as every other field
+    here — see app.collectors.mca_data_gov_in_adapter's own docstring."""
     return {
         "CIN": cin,
         "Company Name": name,
-        "Company Status": "Active",
+        "Company Status": company_status,
         "Company Class": "Private",
         "Company Category": "Company limited by Shares",
         "Company SubCategory": "Non-govt company",
@@ -41,6 +46,9 @@ def _real_shaped_record(cin: str, name: str, state: str = "Maharashtra") -> dict
         "Registrar of Companies": "RoC-Pune",
         "Principal Business Activity": "Manufacturing",
         "Registered Office Address": f"123 MG Road, Pune, {state} 411001",
+        "Company Indian/Foreign Company": "Indian",
+        "NIC Code": "2599",
+        "Company Industrial Classification": "Manufacture of other fabricated metal products",
     }
 
 
@@ -116,6 +124,25 @@ def test_collect_maps_real_field_names_correctly(monkeypatch):
     assert items[0].external_identifier == "U12345MH2015PTC000001"
     assert items[0].raw_content["company_name"] == "Real Shape Test Co"
     assert items[0].raw_content["registered_state"] == "Maharashtra"
+
+
+def test_collect_maps_module_8a_fields(monkeypatch):
+    """NIC code / industrial classification / Indian-foreign
+    classification — confirmed present on this pilot's real resource,
+    not part of Module 5C's original field list (see this adapter's
+    own module docstring)."""
+    adapter = MCADataGovInAdapter()
+    record = _real_shaped_record("U12345MH2015PTC000002", "Module 8A Field Test Co")
+    monkeypatch.setattr(
+        "app.collectors.mca_data_gov_in_adapter.httpx.get", lambda *a, **k: _mock_response([record])
+    )
+    items = adapter.collect({"api_key": "x", "resource_id": "y"})
+    assert items[0].raw_content["nic_code"] == "2599"
+    assert items[0].raw_content["indian_foreign_classification"] == "Indian"
+    assert (
+        items[0].raw_content["industrial_classification"]
+        == "Manufacture of other fabricated metal products"
+    )
 
 
 def test_collect_raises_retryable_on_timeout(monkeypatch):
@@ -323,6 +350,12 @@ async def test_promotion_preserves_unmappable_fields_as_provenance_only(client, 
     field_names = {item["field_name"] for item in lineage.json()["data"]["items"]}
     assert "company_status" in field_names  # no Company.status equivalent, but preserved
     assert "authorized_capital" in field_names  # no Company field, but preserved
+    # Module 8A: NIC code / industrial classification must never become
+    # a Capability/Offering — only ever a provenance-only observation,
+    # exactly like the other unmappable fields above.
+    assert "nic_code" in field_names
+    assert "industrial_classification" in field_names
+    assert "indian_foreign_classification" in field_names
 
 
 # --------------------------------------------------------------------------
@@ -345,6 +378,53 @@ async def test_same_cin_produces_same_source_identity_idempotent(client, monkeyp
     second = (await _create_mca_job(client, admin, source["id"])).json()["data"]
     assert second["result_count"] == 0
     assert second["skipped_count"] == 1  # same CIN -> same source identity, not a new observation
+
+
+@pytest.mark.asyncio
+async def test_reingestion_with_changed_status_creates_new_observation(client, monkeypatch):
+    """Module 8A / Gap 1 fix: same CIN, DIFFERENT content (e.g. the
+    registered company_status changing between two pulls) must produce
+    a new, separate RawObservation — never silently skipped as a
+    duplicate, since that would mean a real status change is never
+    captured at all. The original observation is untouched (append-
+    only); this only proves a second, distinct row now exists."""
+    admin = await _register_admin(client, "mca-statuschange@example.com")
+    source = await _create_mca_source(client, admin)
+    cin = "U44444MH2015PTC000045"
+
+    monkeypatch.setattr(
+        "app.collectors.mca_data_gov_in_adapter.httpx.get",
+        lambda *a, **k: _mock_response([_real_shaped_record(cin, "Status Change Co")]),
+    )
+    first = (await _create_mca_job(client, admin, source["id"])).json()["data"]
+    assert first["result_count"] == 1
+    assert first["skipped_count"] == 0
+
+    monkeypatch.setattr(
+        "app.collectors.mca_data_gov_in_adapter.httpx.get",
+        lambda *a, **k: _mock_response(
+            [_real_shaped_record(cin, "Status Change Co", company_status="Strike Off")]
+        ),
+    )
+    second = (await _create_mca_job(client, admin, source["id"])).json()["data"]
+    assert second["result_count"] == 1  # a genuine new observation, not a skip
+    assert second["skipped_count"] == 0
+
+    first_events = (
+        await client.get(
+            f"/api/v1/acquisition/jobs/{first['id']}/events", headers=_auth_headers(admin)
+        )
+    ).json()["data"]["items"]
+    second_events = (
+        await client.get(
+            f"/api/v1/acquisition/jobs/{second['id']}/events", headers=_auth_headers(admin)
+        )
+    ).json()["data"]["items"]
+    assert first_events[0]["outcome"] == "created"
+    assert second_events[0]["outcome"] == "created"
+    # Two distinct RawObservation rows for the same CIN — the original
+    # is never mutated or replaced.
+    assert first_events[0]["raw_observation_id"] != second_events[0]["raw_observation_id"]
 
 
 @pytest.mark.asyncio
