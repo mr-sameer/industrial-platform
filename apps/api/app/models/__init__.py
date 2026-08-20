@@ -42,6 +42,7 @@ from app.models.requirement import (
     RequirementSpecificationCriterion,
     RequirementStatus,
 )
+from app.models.search_event import SearchEvent, SearchResultCandidate
 from app.models.session import Session, SessionRevokedReason
 from app.models.source_registry import (
     CollectionMethod,
@@ -111,6 +112,8 @@ __all__ = [
     "ResolutionState",
     "RiskTier",
     "Role",
+    "SearchEvent",
+    "SearchResultCandidate",
     "Session",
     "SessionRevokedReason",
     "SocialPlatform",

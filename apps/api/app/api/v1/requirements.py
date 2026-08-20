@@ -19,6 +19,11 @@ CurrentUser gate. See app.services.requirement_matching_service for the
 actual scoring/ranking logic; this route only translates its dataclasses
 into the approved response contract
 (docs/product/phase-7a-requirement-intelligence-architecture.md Section 13).
+
+Module 7B (Search Telemetry), additive: GET /{requirement_id}/matches
+also persists the execution via app.services.search_telemetry_service
+before returning — see that module's own docstring for the
+fail-loud transaction behavior. No other route in this file changes.
 """
 
 import uuid
@@ -47,7 +52,7 @@ from app.schemas.requirement import (
     RequirementMatchTrustSignal,
     RequirementSpecificationCriterionPublic,
 )
-from app.services import requirement_matching_service, requirement_service
+from app.services import requirement_matching_service, requirement_service, search_telemetry_service
 from app.services.requirement_matching_service import MatchCandidate
 from app.services.requirement_service import (
     CategoryNotFoundError,
@@ -252,6 +257,16 @@ async def get_requirement_matches(
     404-not-403 policy for a requirement that isn't the caller's own.
     No pagination params, no output cap beyond the 500-candidate
     retrieval ceiling — Option B, per the approved 7A-2 contract.
+
+    Module 7B (Search Telemetry), additive: after the match result is
+    computed and translated into response DTOs, the execution is
+    persisted via search_telemetry_service.record_search before the
+    response is returned. That call performs its own commit and, per
+    the approved 7B design, is intentionally NOT wrapped in a
+    try/except here — a telemetry write failure must fail this
+    request rather than silently return matches that were never
+    recorded. requirement_matching_service.compute_matches itself is
+    untouched by this addition.
     """
     requirement = await requirement_service.get_requirement_for_user(
         db, requirement_id, current_user.id
@@ -268,6 +283,9 @@ async def get_requirement_matches(
     matches = [
         _to_match_dto(candidate, rank) for rank, candidate in enumerate(result.candidates, start=1)
     ]
+    await search_telemetry_service.record_search(
+        db, requirement, result, matches, user_id=current_user.id
+    )
     return success_response(
         RequirementMatchesResponse(
             requirement_id=requirement.id,
