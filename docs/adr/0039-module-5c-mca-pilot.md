@@ -140,11 +140,20 @@ mocked network, stated exactly that way throughout.
   claimed** — see the network-constraint section above. Every test
   uses a real, confirmed field schema against a mocked network
   boundary.
+
+  > **Update (Module 8A, ADR-0044):** resolved — a real, live,
+  > authenticated pilot run was performed and succeeded. See ADR-0044
+  > for the transport fix that made this possible and the full result.
+
 - **Exact JSON key casing from a live data.gov.in response was never
   confirmed** — the adapter defends against multiple plausible
   casings, but the first real run (by an operator with actual network
   access) should confirm this and simplify the extraction logic once
   confirmed.
+
+  > **Update (Module 8A, ADR-0044):** resolved — confirmed against a
+  > real authenticated response; 9 field-casing variants corrected.
+  > See ADR-0044.
 - **Address→city parsing remains a best-effort heuristic**, honestly
   bounded (returns `None` rather than guess when it can't disambiguate
   against a known state) — not a general address parser.
