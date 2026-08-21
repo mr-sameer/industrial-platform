@@ -109,12 +109,80 @@ promotion of every resulting observation to a canonical Company.
 - This is a 5-record controlled pilot, not the 25–50 record pilot
   Module 5C's Section 9 recommends for full validation — a larger run
   remains a separate future decision.
+
+  > **Update (45-record expansion, see Addendum below):** resolved —
+  > a follow-up 45-record acquisition and promotion batch was run
+  > against the same source, within Module 5C's original 25–50 range.
 - Legal-review items from Module 5C's Section 10 remain a human
   decision; `collection_policy_status` was set to `allowed` for this
   specific controlled run, not as a general clearance determination.
 - `attempt_city_from_address`'s address→city heuristic and the
   reviewing-admin-becomes-technical-owner placeholder (both noted in
   ADR-0039) are unchanged by this module.
+
+## Addendum: 45-Record Expansion (Module 8A Follow-up)
+
+Performed after this ADR was first accepted, using the exact same
+architecture and code documented above — **no source code, schema, or
+canonical model was changed for this expansion.** Clearly distinct
+from the original 5-record pilot (Decisions 5–6 above): this is a
+second, separate `AcquisitionJob` against the same source, followed by
+a second, separate promotion batch.
+
+### Acquisition
+- New `AcquisitionJob` `71a64293-883f-4a18-99b6-ec5faf52c7a6` — same
+  source (`source_id=7360c0ad-f18e-4bc5-8bda-5da7303855a1`), same
+  resource (`4dbe5667-7b6b-41d7-82af-211562424d9a`), `limit=50`,
+  `offset=0`, through the same, unmodified `pilot_service.run_pilot`
+  → `acquisition_service.create_and_run_job` → `MCADataGovInAdapter`
+  path (Decisions 3–4 above, unchanged).
+- Result: `succeeded`, 45 records created, **5 skipped as
+  duplicates** (exactly the original 5 pilot CINs — the idempotency
+  fix from Decision 2 correctly recognized them as already-known,
+  unchanged content, and did not re-create them), 0 failed, 0 retries.
+- Entity resolution: 45/45 resolved `NEW` — 0 AUTO_MATCH,
+  0 REVIEW_REQUIRED, 0 NO_MATCH.
+- The original 5 `RawObservation` rows and their originating
+  `AcquisitionJob` (`83870cac-4987-47f9-8776-4f615dd6144f`) were not
+  touched by this run — confirmed directly (row counts and IDs
+  re-checked before and after, and independently re-verified a second
+  time against fresh database queries).
+
+### Promotion
+All 45 newly created observations were reviewed and promoted, one at
+a time, each independently verified before the next, via the same
+`company_promotion_service.promote_raw_observation_to_company` used
+for the original 5 (Decision 6) — no new promotion mechanism.
+
+- **45/45 promotions succeeded** — **270/270 individual verification
+  checks passed** (6 checks × 45 observations: exactly one Company
+  created, name match, CIN match, at least one provenance record
+  created, provenance linked only to that observation, no `verified`
+  status) — independently re-derived from the database after the
+  fact, not merely reused from the promotion run's own output.
+- `Company` count: **6 → 51 (delta = exactly 45)**.
+- All 45 CINs map one-to-one to the 45 new `Company` rows — no
+  duplicates, no unintended rows.
+- **Zero `ProvenanceRecord` rows anywhere in the database carry
+  status `verified`** — checked as a global query across the whole
+  table, not just this batch.
+- The original 5 Module 8A companies were re-verified by CIN after
+  this batch: all 5 `Company` IDs and names are unchanged from
+  Decision 6's table above.
+
+### Distinction from the original 5-record pilot
+| | Original pilot | This expansion |
+|---|---|---|
+| AcquisitionJob | `83870cac-4987-47f9-8776-4f615dd6144f` | `71a64293-883f-4a18-99b6-ec5faf52c7a6` |
+| Records requested | 5 | 50 |
+| Records created | 5 | 45 (5 correctly skipped as duplicates) |
+| Companies promoted | 5 | 45 |
+| Company count after | 6 | 51 |
+
+No script was added to the repository for this batch — it was
+performed via an uncommitted verification wrapper around the same
+existing promotion function documented above (confirmed by a full
+git history search for any batch-specific file addition: none found).
 
 ## Consequences
 No new table, model, migration, or change to canonical architecture.
