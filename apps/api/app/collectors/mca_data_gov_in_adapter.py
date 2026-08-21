@@ -36,12 +36,49 @@ Module 5C's original field list. Raw capture only, same as every
 other field here; see app.collectors.field_profiles for why these are
 registered as extra_fields (provenance-only) and never become a
 Capability/Offering/supplier claim.
+
+Module 8A live-schema correction: the exact live JSON key casing for
+resource 4dbe5667-7b6b-41d7-82af-211562424d9a was confirmed via a real
+authenticated request (from an environment with working network access
+to data.gov.in — this sandbox still cannot reach it, see above). Six
+fields already matched a previously-guessed variant (CIN, CompanyName,
+AuthorizedCapital, CompanyStatus, nic_code, CompanyIndustrialClassification);
+nine did not and would have silently extracted as None
+(CompanyROCcode, CompanyCategory, CompanySubCategory, CompanyClass,
+PaidupCapital, CompanyRegistrationdate_date, Registered_Office_Address,
+CompanyStateCode, CompanyIndian/Foreign Company) — all nine confirmed
+live keys were added as additional variants below; nothing already
+present was removed or renamed. CompanyStateCode's actual value shape
+(full state name vs. a coded abbreviation) was not independently
+confirmed — app.collectors.normalization.attempt_city_from_address's
+existing "return None rather than guess" behavior already handles that
+uncertainty safely. `Listingstatus` is a live field with no mapping
+anywhere in this file — deliberately out of scope for this correction.
+
+Module 8A transport fix: a real, reproducible connectivity diagnosis
+(from an environment with working network access) found that
+api.data.gov.in — or something in front of it — hangs indefinitely for
+a default-configured Python HTTP client (default httpx, default
+urllib) while a plain `curl.exe` request succeeds immediately. The
+confirmed-working combination, reproduced exactly here via httpx (no
+new dependency; httpx 0.27.0 / httpcore 1.0.9 both already support
+every piece of this cleanly — see _build_ssl_context and
+_TRANSPORT_HEADERS below): an SSLContext with ALPN restricted to
+HTTP/1.1 only (never HTTP/2), a curl-shaped User-Agent, `Accept: */*`,
+`Connection: close`, and a 30-second timeout (up from the previous
+15s). TLS certificate verification is NOT weakened by this —
+_build_ssl_context starts from `ssl.create_default_context()`
+(CERT_REQUIRED, check_hostname=True) and only restricts ALPN; nothing
+here touches `verify=False` or disables hostname checking. The
+existing try/except classification around the request (Retryable vs.
+NonRetryable) is unchanged — only the request's own kwargs changed.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import ssl
 from typing import Any
 
 import httpx
@@ -60,7 +97,35 @@ from app.collectors.base import (
 # documentation agree on this shape) — not independently confirmed via
 # a live call from this environment (see this module's docstring).
 _API_BASE_URL = "https://api.data.gov.in/resource"
-_DEFAULT_TIMEOUT_SECONDS = 15.0
+# 30s, not the previous 15s — part of the confirmed-working transport
+# configuration (see module docstring's "Module 8A transport fix").
+_DEFAULT_TIMEOUT_SECONDS = 30.0
+
+# The exact header set confirmed, together with _build_ssl_context
+# below, to actually reach api.data.gov.in — see module docstring.
+# User-Agent deliberately mimics curl (the one client confirmed to
+# work unmodified); this is a transport-compatibility measure, not
+# impersonation of a different piece of software's behavior/license.
+_TRANSPORT_HEADERS: dict[str, str] = {
+    "User-Agent": "curl/8.0",
+    "Accept": "*/*",
+    "Connection": "close",
+}
+
+
+def _build_ssl_context() -> ssl.SSLContext:
+    """
+    Starts from ssl.create_default_context() — full certificate
+    verification and hostname checking, exactly as httpx's own default
+    (never weakened, never verify=False) — and restricts ALPN
+    negotiation to HTTP/1.1 only. Confirmed necessary, together with
+    _TRANSPORT_HEADERS, to reach api.data.gov.in at all from a Python
+    HTTP client (see module docstring).
+    """
+    context = ssl.create_default_context()
+    context.set_alpn_protocols(["http/1.1"])
+    return context
+
 
 # Real, confirmed field names from the dataset's own catalog
 # description — several plausible JSON-key casings are tried for each,
@@ -70,14 +135,29 @@ _FIELD_KEY_VARIANTS: dict[str, list[str]] = {
     "cin": ["CIN", "cin", "Corporate_identification_number", "corporate_identification_number"],
     "company_name": ["Company Name", "company_name", "CompanyName", "COMPANY_NAME"],
     "company_status": ["Company Status", "company_status", "CompanyStatus"],
-    "company_class": ["Company Class", "company_class"],
-    "company_category": ["Company Category", "company_category"],
-    "sub_category": ["Company SubCategory", "sub_category", "Sub Category"],
+    "company_class": ["Company Class", "company_class", "CompanyClass"],
+    "company_category": ["Company Category", "company_category", "CompanyCategory"],
+    "sub_category": ["Company SubCategory", "sub_category", "Sub Category", "CompanySubCategory"],
     "authorized_capital": ["Authorized Capital", "authorized_capital", "AuthorizedCapital"],
-    "paid_up_capital": ["Paid up Capital", "paid_up_capital", "PaidUpCapital"],
-    "date_of_registration": ["Date of Registration", "date_of_registration", "DateOfRegistration"],
-    "registered_state": ["Registered State", "registered_state", "RegisteredState"],
-    "registrar_of_companies": ["Registrar of Companies", "registrar_of_companies", "ROC"],
+    "paid_up_capital": ["Paid up Capital", "paid_up_capital", "PaidUpCapital", "PaidupCapital"],
+    "date_of_registration": [
+        "Date of Registration",
+        "date_of_registration",
+        "DateOfRegistration",
+        "CompanyRegistrationdate_date",
+    ],
+    "registered_state": [
+        "Registered State",
+        "registered_state",
+        "RegisteredState",
+        "CompanyStateCode",
+    ],
+    "registrar_of_companies": [
+        "Registrar of Companies",
+        "registrar_of_companies",
+        "ROC",
+        "CompanyROCcode",
+    ],
     "principal_business_activity": [
         "Principal Business Activity",
         "principal_business_activity",
@@ -87,20 +167,22 @@ _FIELD_KEY_VARIANTS: dict[str, list[str]] = {
         "Registered Office Address",
         "registered_office_address",
         "RegisteredOfficeAddress",
+        "Registered_Office_Address",
     ],
     # Module 8A additions — confirmed present on the specific resource
     # identified for this pilot (not part of Module 5C's original
     # research pass, see docs/product/phase-5c-india-company-data-source-architecture.md
     # Section 2's field list). Same defensive multi-casing treatment as
-    # every field above; exact casing still unconfirmed against a live
-    # response (see module docstring) — this is raw capture only, see
-    # app.collectors.field_profiles for why these never become a
-    # Capability/Offering.
+    # every field above; exact casing for nic_code/industrial_classification
+    # is now live-confirmed (see module docstring's live-schema note) —
+    # this is raw capture only, see app.collectors.field_profiles for
+    # why these never become a Capability/Offering.
     "indian_foreign_classification": [
         "Company Indian/Foreign Company",
         "CompanyIndianForeignCompany",
         "Indian/Foreign Company",
         "indian_foreign_company",
+        "CompanyIndian/Foreign Company",
     ],
     "nic_code": ["NIC Code", "nic_code", "NICCode", "Nic Code"],
     "industrial_classification": [
@@ -176,7 +258,9 @@ class MCADataGovInAdapter(SourceAdapter):
             response = httpx.get(
                 url,
                 params={"api-key": api_key, "format": "json", "limit": limit, "offset": offset},
+                headers=_TRANSPORT_HEADERS,
                 timeout=_DEFAULT_TIMEOUT_SECONDS,
+                verify=_build_ssl_context(),
             )
         except httpx.TimeoutException as exc:
             raise RetryableCollectorError(f"Timed out contacting data.gov.in: {exc}") from exc

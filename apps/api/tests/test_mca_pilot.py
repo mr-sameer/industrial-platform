@@ -11,6 +11,7 @@ web research while writing the Phase 5C architecture document) — not
 invented field names.
 """
 
+import ssl
 from unittest.mock import MagicMock
 
 import httpx
@@ -49,6 +50,34 @@ def _real_shaped_record(
         "Company Indian/Foreign Company": "Indian",
         "NIC Code": "2599",
         "Company Industrial Classification": "Manufacture of other fabricated metal products",
+    }
+
+
+def _live_shaped_record(cin: str, name: str, state_code: str = "MH") -> dict:
+    """One record using the ACTUAL live JSON key casing confirmed by a
+    real authenticated request against resource
+    4dbe5667-7b6b-41d7-82af-211562424d9a (Module 8A live-schema
+    correction) — deliberately a different shape from
+    _real_shaped_record above (which reflects the pre-live-confirmation
+    guess), so these tests exercise the real casing independently of
+    the older fixture."""
+    return {
+        "CIN": cin,
+        "CompanyName": name,
+        "CompanyROCcode": "RoC-Pune",
+        "CompanyCategory": "Company limited by Shares",
+        "CompanySubCategory": "Non-govt company",
+        "CompanyClass": "Private",
+        "AuthorizedCapital": "1000000",
+        "PaidupCapital": "500000",
+        "CompanyRegistrationdate_date": "15/09/2015",
+        "Registered_Office_Address": f"123 MG Road, Pune, {state_code} 411001",
+        "Listingstatus": "Unlisted",
+        "CompanyStatus": "Active",
+        "CompanyStateCode": state_code,
+        "CompanyIndian/Foreign Company": "Indian",
+        "nic_code": "2599",
+        "CompanyIndustrialClassification": "Manufacture of other fabricated metal products",
     }
 
 
@@ -143,6 +172,97 @@ def test_collect_maps_module_8a_fields(monkeypatch):
         items[0].raw_content["industrial_classification"]
         == "Manufacture of other fabricated metal products"
     )
+
+
+def test_collect_maps_live_confirmed_field_names_correctly(monkeypatch):
+    """Module 8A live-schema correction: every field name below is the
+    ACTUAL casing confirmed by a real authenticated request, not a
+    guess — this is the test the correction exists to satisfy. Covers
+    all nine fields that were previously mismatched, plus the six that
+    already matched, so a regression in any of the fifteen mapped
+    fields is caught here. Listingstatus is deliberately not asserted
+    — it has no mapping, out of Module 8A's approved scope."""
+    adapter = MCADataGovInAdapter()
+    record = _live_shaped_record("U12345MH2015PTC000003", "Live Schema Test Co", state_code="MH")
+    monkeypatch.setattr(
+        "app.collectors.mca_data_gov_in_adapter.httpx.get", lambda *a, **k: _mock_response([record])
+    )
+    items = adapter.collect({"api_key": "x", "resource_id": "y"})
+    assert len(items) == 1
+    content = items[0].raw_content
+
+    assert items[0].external_identifier == "U12345MH2015PTC000003"
+    assert content["cin"] == "U12345MH2015PTC000003"
+    assert content["company_name"] == "Live Schema Test Co"
+    assert content["company_status"] == "Active"
+    assert content["authorized_capital"] == "1000000"
+    assert content["nic_code"] == "2599"
+    assert content["industrial_classification"] == "Manufacture of other fabricated metal products"
+
+    # The nine previously-mismatched fields — this is the real
+    # regression check for the live-schema correction itself.
+    assert content["registrar_of_companies"] == "RoC-Pune"
+    assert content["company_category"] == "Company limited by Shares"
+    assert content["sub_category"] == "Non-govt company"
+    assert content["company_class"] == "Private"
+    assert content["paid_up_capital"] == "500000"
+    assert content["date_of_registration"] == "15/09/2015"
+    assert content["registered_office_address"] == "123 MG Road, Pune, MH 411001"
+    assert content["registered_state"] == "MH"
+    assert content["indian_foreign_classification"] == "Indian"
+
+
+def test_build_ssl_context_restricts_alpn_without_weakening_verification(monkeypatch):
+    """Module 8A transport fix. Proves the exact confirmed-working
+    configuration was applied — ALPN restricted to HTTP/1.1 only — and,
+    just as importantly, that certificate verification was NOT
+    weakened: verify_mode stays CERT_REQUIRED and check_hostname stays
+    True, both untouched from ssl.create_default_context()'s own
+    default. ssl.SSLContext has no public getter for its configured
+    ALPN list, so the setter itself is spied on rather than read back."""
+    from app.collectors import mca_data_gov_in_adapter as module
+
+    recorded: dict[str, object] = {}
+    original_set_alpn = ssl.SSLContext.set_alpn_protocols
+
+    def _spy_set_alpn(self: ssl.SSLContext, protocols: list[str]) -> None:
+        recorded["protocols"] = protocols
+        original_set_alpn(self, protocols)
+
+    monkeypatch.setattr(ssl.SSLContext, "set_alpn_protocols", _spy_set_alpn)
+
+    context = module._build_ssl_context()
+
+    assert isinstance(context, ssl.SSLContext)
+    assert recorded["protocols"] == ["http/1.1"]
+    assert context.verify_mode == ssl.CERT_REQUIRED
+    assert context.check_hostname is True
+
+
+def test_collect_sends_confirmed_transport_configuration(monkeypatch):
+    """Module 8A transport fix. Proves collect() actually applies the
+    confirmed headers, the 30s timeout, and a real ssl.SSLContext (not
+    verify=False, not a bare bool) to the outbound request — without
+    making any real network call."""
+    captured: dict[str, object] = {}
+
+    def _spy_get(url, **kwargs):
+        captured.update(kwargs)
+        return _mock_response([_real_shaped_record("U12345MH2015PTC000005", "Transport Spy Co")])
+
+    monkeypatch.setattr("app.collectors.mca_data_gov_in_adapter.httpx.get", _spy_get)
+
+    adapter = MCADataGovInAdapter()
+    adapter.collect({"api_key": "x", "resource_id": "y"})
+
+    assert captured["headers"] == {
+        "User-Agent": "curl/8.0",
+        "Accept": "*/*",
+        "Connection": "close",
+    }
+    assert captured["timeout"] == 30.0
+    assert isinstance(captured["verify"], ssl.SSLContext)
+    assert captured["verify"] is not False
 
 
 def test_collect_raises_retryable_on_timeout(monkeypatch):
@@ -356,6 +476,53 @@ async def test_promotion_preserves_unmappable_fields_as_provenance_only(client, 
     assert "nic_code" in field_names
     assert "industrial_classification" in field_names
     assert "indian_foreign_classification" in field_names
+
+
+@pytest.mark.asyncio
+async def test_live_schema_fields_remain_provenance_only_after_promotion(client, monkeypatch):
+    """Module 8A live-schema correction, full pipeline: promoting a
+    record shaped with the ACTUAL live field casing must still route
+    nic_code/industrial_classification/indian_foreign_classification
+    through app.collectors.field_profiles as extra_fields only — never
+    a Company column, never a Capability/Offering/supplier claim,
+    exactly as the existing field profile mechanism already guarantees
+    for company_status/authorized_capital etc."""
+    admin = await _register_admin(client, "mca-liveschema@example.com")
+    source = await _create_mca_source(client, admin)
+    record = _live_shaped_record(
+        "U12345MH2015PTC000004", "Live Schema Promotion Co", state_code="MH"
+    )
+    monkeypatch.setattr(
+        "app.collectors.mca_data_gov_in_adapter.httpx.get", lambda *a, **k: _mock_response([record])
+    )
+    job = (await _create_mca_job(client, admin, source["id"])).json()["data"]
+    events = (
+        await client.get(
+            f"/api/v1/acquisition/jobs/{job['id']}/events", headers=_auth_headers(admin)
+        )
+    ).json()["data"]["items"]
+    observation_id = events[0]["raw_observation_id"]
+    company = (
+        await client.post(
+            f"/api/v1/acquisition/observations/{observation_id}/promote",
+            headers=_auth_headers(admin),
+        )
+    ).json()["data"]
+    assert company["name"] == "Live Schema Promotion Co"
+
+    lineage = await client.get(
+        f"/api/v1/provenance?entity_type=company&entity_id={company['id']}",
+        headers=_auth_headers(admin),
+    )
+    items = lineage.json()["data"]["items"]
+    field_names = {item["field_name"] for item in items}
+    assert "nic_code" in field_names
+    assert "industrial_classification" in field_names
+    assert "indian_foreign_classification" in field_names
+    # Every provenance record produced by this pipeline is OBSERVED or
+    # EXTRACTED, never VERIFIED — same assertion as the pre-existing
+    # promotion test, re-checked here against the live-shaped record.
+    assert all(item["status"] in ("observed", "extracted") for item in items)
 
 
 # --------------------------------------------------------------------------
