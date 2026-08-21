@@ -184,6 +184,17 @@ performed via an uncommitted verification wrapper around the same
 existing promotion function documented above (confirmed by a full
 git history search for any batch-specific file addition: none found).
 
+### Post-expansion regression verification
+After the 45-record expansion, the full committed regression suite for
+this area was run: `tests/test_mca_pilot.py`, `tests/test_acquisition.py`,
+`tests/test_pilot.py` — **66/66 passed, 0 failures**. Run against the
+isolated test database only (never the real one); every test mocks the
+`httpx.get` boundary, so no real MCA API call occurred. Confirmed
+afterward, read-only: `git status` clean (no repository change), and
+the real database's `companies` table count unchanged at 51. No source
+code, test, migration, or configuration was modified to produce this
+result — the existing, already-committed suite was simply re-run.
+
 ## Consequences
 No new table, model, migration, or change to canonical architecture.
 Modules 5A–5F, 6D, and 7A–7C remain unmodified.
