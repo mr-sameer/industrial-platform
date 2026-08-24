@@ -195,6 +195,35 @@ the real database's `companies` table count unchanged at 51. No source
 code, test, migration, or configuration was modified to produce this
 result — the existing, already-committed suite was simply re-run.
 
+## Addendum: Module 8B Regression Verification
+
+Covers the controlled Module 8B evidence-application workflow (commit
+`e195363`, reviewed against base `852420d`) — recorded here as the
+regression-verification record referenced by that PR's review.
+
+### Regression suite
+The full six-file regression suite for this area was run:
+`tests/test_evidence_pilot.py`, `tests/test_graph.py`,
+`tests/test_data_quality.py`, `tests/test_pilot.py`,
+`tests/test_mca_pilot.py`, `tests/test_acquisition.py` — **129/129
+passed, 0 failures, 0 errors**. Runtime: 521.51 seconds (8m 41s). One
+unrelated deprecation warning. Run against the isolated
+`industrial_platform_test` database only (never the real one); no real
+MCA API call occurred. Confirmed afterward: the real `industrial_platform`
+database was verified unchanged using exact `COUNT(*)` comparisons
+across all 30 tables. No schema drop, migration, or source/test/
+configuration modification was performed as part of this regression
+run.
+
+### Stale index in the isolated test database
+The focused conflict/overwrite test initially failed against a stale
+`uq_company_members_one_owner` index present in the isolated
+`industrial_platform_test` database. The index was removed only from
+`industrial_platform_test` — not from `industrial_platform`, and not
+via any migration or schema change — after which the focused test
+passed. The full six-file suite was then re-run in full and passed
+**129/129**.
+
 ## Consequences
 No new table, model, migration, or change to canonical architecture.
 Modules 5A–5F, 6D, and 7A–7C remain unmodified.
