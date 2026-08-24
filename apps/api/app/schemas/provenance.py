@@ -123,6 +123,7 @@ class ProvenanceRecordPublic(BaseModel):
     verified_at: datetime | None
     last_observed_at: datetime
     conflict_id: uuid.UUID | None
+    review_note: str | None
     created_at: datetime
     updated_at: datetime
 
@@ -165,3 +166,17 @@ class DataConflictPage(BaseModel):
     page: int
     page_size: int
     total_pages: int
+
+
+# ---- Apply reviewed evidence to Company (Module 8B) ----
+
+
+class ApplyToCompanyRequest(BaseModel):
+    company_id: uuid.UUID
+    overwrite: bool = False
+
+
+class ApplyToCompanyResponse(BaseModel):
+    company_id: uuid.UUID
+    field_name: str
+    provenance_record: ProvenanceRecordPublic

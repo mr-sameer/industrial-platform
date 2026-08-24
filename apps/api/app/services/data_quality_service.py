@@ -29,6 +29,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.data_quality.freshness import classify_freshness
 from app.data_quality.risk_classification import RiskLevel, classify_field
+from app.models.company import Company
 from app.models.data_conflict import ConflictStatus, DataConflict
 from app.models.provenance_record import ProvenanceRecord, ProvenanceStatus
 from app.models.verification_document import VerificationDocument
@@ -51,6 +52,47 @@ class RecordNotUnderReviewableStateError(Exception):
 
 class NoDocumentEvidenceError(Exception):
     pass
+
+
+class RecordNotVerifiedError(Exception):
+    """Raised when attempting to apply a record to a Company that is
+    not yet VERIFIED — an OBSERVED/EXTRACTED/CLAIMED claim must never
+    reach the canonical Company record, automatically or otherwise."""
+
+
+class FieldNotAllowlistedError(Exception):
+    """Raised when a ProvenanceRecord's field_name is not one of the
+    explicit, reviewed field_name -> Company attribute mappings
+    apply_reviewed_field_to_company will ever write through. There is
+    no generic fallback — a new applyable field means adding a new,
+    deliberate branch in that function, not widening a data-driven
+    allowlist."""
+
+
+class RecordCompanyMismatchError(Exception):
+    """Raised when the ProvenanceRecord being applied does not belong
+    to the target Company — this must never write one company's
+    evidence onto another's canonical record."""
+
+
+class EmptyValueError(Exception):
+    """Raised when a ProvenanceRecord's value_observed is empty or
+    whitespace-only — there is nothing usable to apply."""
+
+
+class ValueTooLongError(Exception):
+    """Raised when a value would exceed the target Company column's
+    real length bound — checked here, before the database ever sees
+    it, rather than surfacing a raw constraint failure."""
+
+
+class ConflictingValueError(Exception):
+    """Raised when the Company field already holds a different,
+    non-empty value and the caller did not explicitly pass
+    overwrite=True. This function never silently overwrites existing
+    canonical data — matches this codebase's established rule (see
+    provenance_service._detect_and_flag_conflict's own docstring:
+    "never silently overwrite conflicting information")."""
 
 
 # --------------------------------------------------------------------
@@ -367,3 +409,124 @@ async def link_evidence(
         },
     )
     return record
+
+
+# --------------------------------------------------------------------
+# Apply reviewed evidence to the canonical Company record (Module 8B)
+# --------------------------------------------------------------------
+
+
+async def apply_reviewed_field_to_company(
+    db: AsyncSession,
+    record: ProvenanceRecord,
+    company: Company,
+    *,
+    reviewer_id: uuid.UUID,
+    overwrite: bool = False,
+) -> Company:
+    """
+    Closes the one real gap Module 8B's architectural review found: a
+    VERIFIED ProvenanceRecord about an EXISTING company (the
+    CONFIRM_MATCH path,
+    app.services.entity_resolution_service._attach_observation_to_existing_company)
+    never wrote anything to the canonical Company row — only
+    company_promotion_service, at Company-*creation* time, ever did.
+    This is that missing, explicit, human-triggered step — never
+    automatic, never a side effect of verify_provenance_record itself.
+
+    Deliberately NOT a generic setattr(company, record.field_name,
+    value_observed): ProvenanceRecord.field_name is free text (see
+    that model's own docstring — "Free text, not an enum"), and
+    company_promotion_service already proves field_name does not
+    generally equal the Company attribute name (e.g. field_name=
+    "company_name" maps to Company.name). This function instead
+    dispatches on a small, closed, explicitly-reviewed set of
+    field_name values — adding a new applyable field means adding a
+    new branch here deliberately, never widening a data-driven
+    allowlist. Every branch is a plain string Company column with a
+    real, enforced length bound; no ARRAY(String) column (secondary_industries,
+    product_categories, manufacturing_categories, manufacturing_expertise,
+    capabilities, core_values, export_categories, ai_tags) is reachable
+    through this function — there is no safe single-value write
+    semantics for those yet. Identity/legal fields (cin, pan,
+    legal_name, gst_number, ...), Company.status, and
+    Company.verification_status are likewise never reachable here —
+    they are not in scope for website-sourced evidence.
+    """
+    if record.status != ProvenanceStatus.VERIFIED:
+        raise RecordNotVerifiedError(
+            f"ProvenanceRecord {record.id} is not VERIFIED (status={record.status.value!r})."
+        )
+    if record.company_id != company.id:
+        raise RecordCompanyMismatchError(
+            f"ProvenanceRecord {record.id} belongs to company_id={record.company_id}, "
+            f"not company_id={company.id}."
+        )
+
+    value = record.value_observed.strip()
+    if not value:
+        raise EmptyValueError(f"ProvenanceRecord {record.id} has no usable value to apply.")
+
+    if record.field_name == "description":
+        current_value = company.description
+        max_length = None
+    elif record.field_name == "industry":
+        current_value = company.industry
+        max_length = 120
+    elif record.field_name == "short_description":
+        current_value = company.short_description
+        max_length = 500
+    else:
+        raise FieldNotAllowlistedError(
+            f"field_name {record.field_name!r} is not allowlisted for apply-to-company — "
+            "only 'description', 'industry', and 'short_description' are."
+        )
+
+    if max_length is not None and len(value) > max_length:
+        raise ValueTooLongError(
+            f"value is {len(value)} characters; Company.{record.field_name} allows at most "
+            f"{max_length}."
+        )
+    if current_value and current_value != value and not overwrite:
+        raise ConflictingValueError(
+            f"Company.{record.field_name} already has a different value "
+            f"({current_value!r} vs {value!r}) — pass overwrite=True to replace it."
+        )
+
+    if record.field_name == "description":
+        company.description = value
+    elif record.field_name == "industry":
+        company.industry = value
+    else:
+        company.short_description = value
+
+    # No dedicated applied_by/applied_at column exists on either model
+    # (a confirmed, accepted gap — see Module 8B's architectural
+    # review) — recorded as a plain audit line on the record's own
+    # review_note instead, matching this field's established use (only
+    # ever set by this module's own review-decision functions), rather
+    # than adding a migration for this phase.
+    timestamp = datetime.now(UTC).isoformat()
+    audit_line = (
+        f"Applied to Company.{record.field_name} by {reviewer_id} at {timestamp} "
+        f"(previous value: {current_value!r})."
+    )
+    record.review_note = (
+        f"{record.review_note}\n{audit_line}" if record.review_note else audit_line
+    )
+
+    await db.commit()
+    await db.refresh(company)
+    await db.refresh(record)
+    await audit_service.log_event(
+        db,
+        "provenance_applied_to_company",
+        user_id=str(reviewer_id),
+        metadata={
+            "provenance_record_id": str(record.id),
+            "company_id": str(company.id),
+            "field_name": record.field_name,
+            "overwrite": overwrite,
+        },
+    )
+    return company

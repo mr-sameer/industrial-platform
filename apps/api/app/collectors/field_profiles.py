@@ -204,7 +204,24 @@ def _extract_manual(content: dict[str, object]) -> ExtractedIdentity:
 _MANUAL_ENTRY_PROFILE = SourceFieldProfile(
     collector_type="manual_entry",
     direct_fields=("company_name", "industry", "state"),
-    extra_fields=("city", "website", "description"),
+    extra_fields=(
+        "city",
+        "website",
+        "description",
+        # Module 8B additions. Deliberately extra_fields, never
+        # direct_fields — provenance-only until a human reviews and,
+        # for description/industry/short_description only, explicitly
+        # applies them via data_quality_service.apply_reviewed_field_to_company.
+        # claimed_certifications and products_or_services_summary have
+        # no Company column equivalent at all and never will be
+        # reachable through that function's allowlist — see this
+        # module's Module 8B review for why ("ISO certificate
+        # mentioned" must never silently become "ISO certified").
+        "short_description",
+        "claimed_industries",
+        "claimed_certifications",
+        "products_or_services_summary",
+    ),
     extract=_extract_manual,
 )
 
