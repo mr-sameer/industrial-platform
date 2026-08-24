@@ -19,13 +19,18 @@ the same honest pattern Phase 4B used for Product creation.
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy import select
 
-from app.core.dependencies import CurrentUser
+from app.core.dependencies import CurrentUser, require_role
 from app.core.responses import ApiSuccess, success_response
 from app.db.session import DbSession
+from app.models.company import Company
 from app.models.data_conflict import ConflictStatus
+from app.models.user import Role
 from app.schemas.provenance import (
+    ApplyToCompanyRequest,
+    ApplyToCompanyResponse,
     DataConflictPage,
     DataConflictPublic,
     DataConflictResolve,
@@ -38,7 +43,7 @@ from app.schemas.provenance import (
     SourceRegistryPublic,
     SourceRegistryUpdate,
 )
-from app.services import provenance_service
+from app.services import data_quality_service, provenance_service
 from app.services.provenance_service import (
     AlreadyVerifiedError,
     RawObservationNotFoundError,
@@ -47,6 +52,8 @@ from app.services.provenance_service import (
 
 router = APIRouter(prefix="/provenance", tags=["provenance"])
 sources_router = APIRouter(prefix="/sources", tags=["sources"])
+
+RequireAdmin = Annotated[object, Depends(require_role(Role.ADMIN))]
 
 
 # ---- Source Registry ----
@@ -232,6 +239,85 @@ async def verify_provenance_record(
             },
         ) from exc
     return success_response(ProvenanceRecordPublic.model_validate(verified))
+
+
+@router.post(
+    "/records/{record_id}/apply-to-company",
+    response_model=ApiSuccess[ApplyToCompanyResponse],
+)
+async def apply_provenance_record_to_company(
+    record_id: uuid.UUID,
+    payload: ApplyToCompanyRequest,
+    db: DbSession,
+    current_user: CurrentUser,
+    _admin: RequireAdmin,
+) -> ApiSuccess[ApplyToCompanyResponse]:
+    """
+    Closes the one real gap Module 8B's architectural review found —
+    see data_quality_service.apply_reviewed_field_to_company's own
+    docstring. This route does no business logic of its own: it only
+    resolves the record/company by id and delegates entirely to that
+    function.
+    """
+    record = await provenance_service.get_provenance_record(db, record_id)
+    if record is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "code": "PROVENANCE_RECORD_NOT_FOUND",
+                "message": "No provenance record with that ID exists.",
+            },
+        )
+    company_result = await db.execute(select(Company).where(Company.id == payload.company_id))
+    company = company_result.scalar_one_or_none()
+    if company is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "COMPANY_NOT_FOUND", "message": "No company with that ID exists."},
+        )
+    try:
+        await data_quality_service.apply_reviewed_field_to_company(
+            db, record, company, reviewer_id=current_user.id, overwrite=payload.overwrite
+        )
+    except data_quality_service.RecordNotVerifiedError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"code": "NOT_VERIFIED", "message": str(exc)},
+        ) from exc
+    except data_quality_service.RecordCompanyMismatchError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"code": "COMPANY_MISMATCH", "message": str(exc)},
+        ) from exc
+    except data_quality_service.FieldNotAllowlistedError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"code": "FIELD_NOT_ALLOWLISTED", "message": str(exc)},
+        ) from exc
+    except data_quality_service.EmptyValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"code": "EMPTY_VALUE", "message": str(exc)},
+        ) from exc
+    except data_quality_service.ValueTooLongError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"code": "VALUE_TOO_LONG", "message": str(exc)},
+        ) from exc
+    except data_quality_service.ConflictingValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "CONFLICTING_VALUE", "message": str(exc)},
+        ) from exc
+
+    refreshed_record = await provenance_service.get_provenance_record(db, record_id)
+    return success_response(
+        ApplyToCompanyResponse(
+            company_id=company.id,
+            field_name=record.field_name,
+            provenance_record=ProvenanceRecordPublic.model_validate(refreshed_record),
+        )
+    )
 
 
 # ---- Data Conflicts ----
