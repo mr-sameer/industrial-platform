@@ -14,14 +14,17 @@ import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy import select
 
 from app.core.dependencies import CurrentUser, require_role
 from app.core.responses import ApiSuccess, success_response
 from app.db.session import DbSession
+from app.models.company import Company
 from app.models.user import Role
 from app.schemas.graph import (
     CapabilityCreate,
     CapabilityPublic,
+    CompanyCapabilitySyncResponse,
     CompanyGraphView,
     FactoryCreate,
     FactoryPublic,
@@ -106,6 +109,38 @@ async def list_capabilities(
 ) -> ApiSuccess[list[CapabilityPublic]]:
     capabilities = await graph_service.list_capabilities(db)
     return success_response([CapabilityPublic.model_validate(c) for c in capabilities])
+
+
+@router.post(
+    "/companies/{company_id}/sync-capabilities",
+    response_model=ApiSuccess[CompanyCapabilitySyncResponse],
+)
+async def sync_company_capabilities(
+    company_id: uuid.UUID, db: DbSession, current_user: CurrentUser, _admin: RequireAdmin
+) -> ApiSuccess[CompanyCapabilitySyncResponse]:
+    """
+    Module 8C — explicit, human-triggered bridge from VERIFIED
+    HAS_CAPABILITY graph relationships to Company.capabilities. This
+    route does no business logic of its own: it resolves the company
+    by id and delegates entirely to
+    graph_service.sync_company_capabilities_from_graph.
+    """
+    result = await db.execute(select(Company).where(Company.id == company_id))
+    company = result.scalar_one_or_none()
+    if company is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "COMPANY_NOT_FOUND", "message": "No company with that ID exists."},
+        )
+    before = list(company.capabilities or [])
+    company = await graph_service.sync_company_capabilities_from_graph(
+        db, company, triggered_by=current_user.id
+    )
+    after = list(company.capabilities or [])
+    added = [name for name in after if name not in before]
+    return success_response(
+        CompanyCapabilitySyncResponse(company_id=company.id, capabilities=after, added=added)
+    )
 
 
 # --------------------------------------------------------------------

@@ -50,4 +50,5 @@ history in place.
 | [0041](0041-module-5e-data-quality-verification.md) | Module 5E: Data Quality & Verification Operations | Accepted |
 | [0042](0042-module-5f-knowledge-graph.md) | Module 5F: Industrial Knowledge Graph | Accepted |
 | [0044](0044-module-8a-mca-live-pilot.md) | Module 8A: Live MCA data pilot (transport fix, field correction, promotion) | Accepted |
+| [0045](0045-module-8c-capability-sync-and-array-evidence-promotion.md) | Module 8C: Capability graph sync and ARRAY(String) evidence promotion | Accepted |
 | [0039](0039-module-5c-mca-pilot.md) | Module 5C: India Company Data Acquisition Pilot (MCA / data.gov.in) | Accepted |

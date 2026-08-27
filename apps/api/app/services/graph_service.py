@@ -46,6 +46,7 @@ from app.schemas.graph import (
     GraphRelationshipCreate,
     OfferingEdgePublic,
 )
+from app.services import audit_service
 
 
 class InvalidRelationshipError(Exception):
@@ -119,6 +120,81 @@ async def list_capabilities(db: AsyncSession) -> list[Capability]:
 async def get_capability(db: AsyncSession, capability_id: uuid.UUID) -> Capability | None:
     result = await db.execute(select(Capability).where(Capability.id == capability_id))
     return result.scalar_one_or_none()
+
+
+async def sync_company_capabilities_from_graph(
+    db: AsyncSession, company: Company, *, triggered_by: uuid.UUID
+) -> Company:
+    """
+    Module 8C — the explicit, human-triggered bridge between the
+    Capability/GraphRelationship graph (this module) and
+    Company.capabilities (Module 3B's plain string array) — closes the
+    exact gap app.services.evidence_service's own docstring flags as
+    "distinct, currently-unsynced." Never automatic, never a side
+    effect of verify_relationship — a reviewer must call this
+    deliberately, matching apply_reviewed_field_to_company's own
+    "never automatic" rule for the field-level equivalent.
+
+    Derives strictly from VERIFIED HAS_CAPABILITY relationships for
+    this company — OBSERVED/EXTRACTED/CLAIMED/UNDER_REVIEW/REJECTED/
+    EXPIRED relationships are never a source, checked directly in the
+    query below, not filtered after the fact.
+
+    Append-only, never a destructive replace: existing
+    Company.capabilities entries — including any manually entered
+    value with no backing graph relationship at all — are preserved
+    untouched. Only capability names not already present (exact,
+    case-sensitive match) are appended.
+
+    Idempotent: a GraphRelationship, once VERIFIED, has no "unverify"
+    path anywhere in this codebase (reject_relationship explicitly
+    refuses to touch an already-VERIFIED row), so the verified-capability
+    set for a company only ever grows. Repeated calls with no new
+    verified relationships since the last sync are true no-ops — no
+    commit, no audit event — mirroring create_capability/
+    create_relationship's own idempotent-return pattern above.
+
+    Never touches Company.status or Company.verification_status —
+    neither is referenced anywhere in this function; verification_status
+    is written exclusively by
+    verification_score_service.sync_legacy_verification_status, a
+    separate, unmodified code path.
+    """
+    result = await db.execute(
+        select(Capability.name)
+        .join(GraphRelationship, GraphRelationship.capability_object_id == Capability.id)
+        .where(
+            GraphRelationship.company_subject_id == company.id,
+            GraphRelationship.relationship_type == RelationshipType.HAS_CAPABILITY,
+            GraphRelationship.status == ProvenanceStatus.VERIFIED,
+        )
+    )
+    verified_names = list(result.scalars().all())
+
+    existing = list(company.capabilities or [])
+    existing_set = set(existing)
+    added: list[str] = []
+    for name in verified_names:
+        if name not in existing_set and name not in added:
+            added.append(name)
+
+    if not added:
+        return company
+
+    company.capabilities = existing + added
+    await db.commit()
+    await db.refresh(company)
+    await audit_service.log_event(
+        db,
+        "company_capabilities_synced",
+        user_id=str(triggered_by),
+        metadata={
+            "company_id": str(company.id),
+            "added": added,
+            "resulting_capabilities": company.capabilities,
+        },
+    )
+    return company
 
 
 # --------------------------------------------------------------------

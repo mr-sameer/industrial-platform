@@ -42,6 +42,16 @@ class CapabilityPublic(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class CompanyCapabilitySyncResponse(BaseModel):
+    """Response for POST /graph/companies/{company_id}/sync-capabilities
+    (Module 8C) — `added` is empty when the sync was a no-op (no new
+    VERIFIED HAS_CAPABILITY relationship since the last sync)."""
+
+    company_id: uuid.UUID
+    capabilities: list[str]
+    added: list[str]
+
+
 class GraphRelationshipCreate(BaseModel):
     company_subject_id: uuid.UUID
     relationship_type: RelationshipType

@@ -27,6 +27,7 @@ from sqlalchemy import select
 from app.collectors.field_profiles import _MANUAL_ENTRY_PROFILE
 from app.db.session import AsyncSessionLocal
 from app.models.capability import Capability
+from app.models.company import Company
 from app.models.provenance_record import ProvenanceStatus
 from app.models.source_registry import CollectionMethod, SourceClass
 from app.schemas.provenance import RawObservationCreate, SourceRegistryCreate
@@ -341,6 +342,245 @@ async def test_apply_to_company_conflict_requires_explicit_overwrite(client):
     assert updated["description"] == "A newer, website-sourced description."
     # Only the allowlisted, targeted field changed — nothing else did.
     assert updated["industry"] == "Manufacturing"
+
+
+# --------------------------------------------------------------------------
+# apply_reviewed_field_to_company — ARRAY(String) fields (Module 8C)
+# --------------------------------------------------------------------------
+
+
+async def _get_business_info(client, admin, company_id: str) -> dict:
+    res = await client.get(
+        f"/api/v1/companies/{company_id}/business-info", headers=_auth_headers(admin)
+    )
+    assert res.status_code == 200, res.text
+    return res.json()["data"]
+
+
+@pytest.mark.asyncio
+async def test_apply_to_company_array_field_appends_value(client):
+    admin = await _register_admin(client, "apply-array-append@example.com")
+    company = await _create_company(client, admin, name="Apply Array Append Co")
+    record = await _create_provenance(
+        client,
+        admin,
+        entity_type="company",
+        entity_id=company["id"],
+        field_name="manufacturing_expertise",
+        value="CNC Machining",
+    )
+    await _verify_record(client, admin, record["id"])
+
+    res = await _apply_to_company(client, admin, record["id"], company["id"])
+    assert res.status_code == 200, res.text
+    assert res.json()["data"]["field_name"] == "manufacturing_expertise"
+
+    info = await _get_business_info(client, admin, company["id"])
+    assert info["manufacturing_expertise"] == ["CNC Machining"]
+
+
+@pytest.mark.asyncio
+async def test_apply_to_company_array_field_duplicate_value_is_idempotent(client):
+    admin = await _register_admin(client, "apply-array-idem@example.com")
+    company = await _create_company(client, admin, name="Apply Array Idempotent Co")
+    record = await _create_provenance(
+        client,
+        admin,
+        entity_type="company",
+        entity_id=company["id"],
+        field_name="capabilities",
+        value="Sheet Metal Fabrication",
+    )
+    await _verify_record(client, admin, record["id"])
+
+    first = await _apply_to_company(client, admin, record["id"], company["id"])
+    assert first.status_code == 200, first.text
+
+    # A second, independent VERIFIED record with the identical value —
+    # exact, case-sensitive match against what's already on the
+    # Company must be a true no-op, not a duplicate entry.
+    second_record = await _create_provenance(
+        client,
+        admin,
+        entity_type="company",
+        entity_id=company["id"],
+        field_name="capabilities",
+        value="Sheet Metal Fabrication",
+    )
+    await _verify_record(client, admin, second_record["id"])
+    second = await _apply_to_company(client, admin, second_record["id"], company["id"])
+    assert second.status_code == 200, second.text
+
+    info = await _get_business_info(client, admin, company["id"])
+    assert info["capabilities"] == ["Sheet Metal Fabrication"]  # not duplicated
+
+
+@pytest.mark.asyncio
+async def test_apply_to_company_array_field_rejects_empty_value(client):
+    admin = await _register_admin(client, "apply-array-empty@example.com")
+    company = await _create_company(client, admin, name="Apply Array Empty Co")
+    record = await _create_provenance(
+        client,
+        admin,
+        entity_type="company",
+        entity_id=company["id"],
+        field_name="core_values",
+        value="   ",
+    )
+    await _verify_record(client, admin, record["id"])
+
+    res = await _apply_to_company(client, admin, record["id"], company["id"])
+    assert res.status_code == 422, res.text
+    assert res.json()["error"]["code"] == "EMPTY_VALUE"
+
+
+@pytest.mark.asyncio
+async def test_apply_to_company_array_field_rejects_company_mismatch(client):
+    admin = await _register_admin(client, "apply-array-mismatch@example.com")
+    company_a = await _create_company(client, admin, name="Apply Array Mismatch Co A")
+    company_b = await _create_company(client, admin, name="Apply Array Mismatch Co B")
+    record = await _create_provenance(
+        client,
+        admin,
+        entity_type="company",
+        entity_id=company_a["id"],
+        field_name="product_categories",
+        value="Bearings",
+    )
+    await _verify_record(client, admin, record["id"])
+
+    res = await _apply_to_company(client, admin, record["id"], company_b["id"])
+    assert res.status_code == 422, res.text
+    assert res.json()["error"]["code"] == "COMPANY_MISMATCH"
+
+
+@pytest.mark.asyncio
+async def test_apply_to_company_array_field_requires_verified_status(client):
+    admin = await _register_admin(client, "apply-array-notverified@example.com")
+    company = await _create_company(client, admin, name="Apply Array NotVerified Co")
+    record = await _create_provenance(
+        client,
+        admin,
+        entity_type="company",
+        entity_id=company["id"],
+        field_name="export_categories",
+        value="Textiles",
+        status_value="observed",
+    )
+
+    res = await _apply_to_company(client, admin, record["id"], company["id"])
+    assert res.status_code == 422, res.text
+    assert res.json()["error"]["code"] == "NOT_VERIFIED"
+
+
+@pytest.mark.asyncio
+async def test_apply_to_company_array_field_enforces_list_count_cap(client):
+    admin = await _register_admin(client, "apply-array-cap@example.com")
+    company = await _create_company(client, admin, name="Apply Array Cap Co")
+
+    # secondary_industries has a 20-entry cap and is not a verification-
+    # scoring input — prefilled directly via the DB, matching this
+    # suite's own established pattern for direct-DB test setup.
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(select(Company).where(Company.id == uuid.UUID(company["id"])))
+        db_company = result.scalar_one()
+        db_company.secondary_industries = [f"Industry {i}" for i in range(20)]
+        await db.commit()
+
+    record = await _create_provenance(
+        client,
+        admin,
+        entity_type="company",
+        entity_id=company["id"],
+        field_name="secondary_industries",
+        value="One Too Many Industry",
+    )
+    await _verify_record(client, admin, record["id"])
+
+    res = await _apply_to_company(client, admin, record["id"], company["id"])
+    assert res.status_code == 422, res.text
+    assert res.json()["error"]["code"] == "ARRAY_LIMIT_EXCEEDED"
+
+    info = await _get_business_info(client, admin, company["id"])
+    assert len(info["secondary_industries"]) == 20  # unchanged — rejected before any write
+
+
+@pytest.mark.asyncio
+async def test_apply_to_company_array_field_rejects_overwrite_true(client):
+    admin = await _register_admin(client, "apply-array-overwrite@example.com")
+    company = await _create_company(client, admin, name="Apply Array Overwrite Co")
+    record = await _create_provenance(
+        client,
+        admin,
+        entity_type="company",
+        entity_id=company["id"],
+        field_name="ai_tags",
+        value="forged-components",
+    )
+    await _verify_record(client, admin, record["id"])
+
+    res = await _apply_to_company(client, admin, record["id"], company["id"], overwrite=True)
+    assert res.status_code == 422, res.text
+    assert res.json()["error"]["code"] == "OVERWRITE_NOT_SUPPORTED_FOR_ARRAY_FIELD"
+
+    # ai_tags has no BusinessInfoUpdate/Detail schema exposure (confirmed
+    # by direct inspection — it's absent from both), so it can't be
+    # checked via GET .../business-info like the other 7 array fields;
+    # checked directly via the DB instead.
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(select(Company).where(Company.id == uuid.UUID(company["id"])))
+        db_company = result.scalar_one()
+        assert not db_company.ai_tags  # rejected before any write
+
+
+@pytest.mark.asyncio
+async def test_apply_to_company_scalar_and_array_fields_coexist_unmodified(client):
+    """Regression: applying an array field and a scalar field to the
+    same company exercises both branches of
+    apply_reviewed_field_to_company back to back — each must keep its
+    own, distinct semantics (array = append, scalar = single-value
+    overwrite-gated), with zero cross-contamination between them."""
+    admin = await _register_admin(client, "apply-array-scalar-coexist@example.com")
+    company = await _create_company(client, admin, name="Apply Coexist Co")
+    assert company["industry"] == "Manufacturing"  # pre-existing scalar value, from _company_payload
+
+    array_record = await _create_provenance(
+        client,
+        admin,
+        entity_type="company",
+        entity_id=company["id"],
+        field_name="manufacturing_categories",
+        value="Precision Forging",
+    )
+    await _verify_record(client, admin, array_record["id"])
+    array_res = await _apply_to_company(client, admin, array_record["id"], company["id"])
+    assert array_res.status_code == 200, array_res.text
+
+    scalar_record = await _create_provenance(
+        client,
+        admin,
+        entity_type="company",
+        entity_id=company["id"],
+        field_name="industry",
+        value="Heavy Manufacturing",
+    )
+    await _verify_record(client, admin, scalar_record["id"])
+    # Unchanged scalar behavior: a differing existing value without
+    # overwrite=True is still a 409 conflict, exactly as before Module 8C.
+    conflict_res = await _apply_to_company(client, admin, scalar_record["id"], company["id"])
+    assert conflict_res.status_code == 409, conflict_res.text
+    assert conflict_res.json()["error"]["code"] == "CONFLICTING_VALUE"
+    scalar_res = await _apply_to_company(
+        client, admin, scalar_record["id"], company["id"], overwrite=True
+    )
+    assert scalar_res.status_code == 200, scalar_res.text
+
+    info = await _get_business_info(client, admin, company["id"])
+    assert info["manufacturing_categories"] == ["Precision Forging"]
+    company_res = await client.get(
+        f"/api/v1/companies/{company['id']}", headers=_auth_headers(admin)
+    )
+    assert company_res.json()["data"]["industry"] == "Heavy Manufacturing"
 
 
 # --------------------------------------------------------------------------

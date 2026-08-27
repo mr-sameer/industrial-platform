@@ -43,6 +43,24 @@ _RELEVANT_COMPANY_FIELDS = frozenset(
     {"name", "legal_name", "cin", "registered_state", "industry", "website"}
 )
 
+# Module 8C — the 8 ARRAY(String) Company columns allowlisted for
+# apply_reviewed_field_to_company's array-append branch, mapped to
+# their list-count cap. Six of eight reuse BusinessInfoUpdate's own
+# Pydantic max_length exactly (Module 3B, confirmed by direct
+# inspection of app.schemas.company_verification); ai_tags has no
+# existing schema exposure to inherit from, so 30 is established here
+# explicitly (see ArrayLimitExceededError's own docstring).
+_ARRAY_FIELD_LIMITS: dict[str, int] = {
+    "core_values": 20,
+    "capabilities": 30,
+    "manufacturing_expertise": 30,
+    "secondary_industries": 20,
+    "product_categories": 30,
+    "manufacturing_categories": 30,
+    "export_categories": 30,
+    "ai_tags": 30,
+}
+
 
 class RecordNotUnderReviewableStateError(Exception):
     """Raised when a requested transition doesn't make sense from the
@@ -84,6 +102,26 @@ class ValueTooLongError(Exception):
     """Raised when a value would exceed the target Company column's
     real length bound — checked here, before the database ever sees
     it, rather than surfacing a raw constraint failure."""
+
+
+class ArrayLimitExceededError(Exception):
+    """Raised when appending a new value to an ARRAY(String) Company
+    column would exceed that field's list-count cap (Module 8C). Six
+    of the eight fields reuse the same cap already enforced on
+    BusinessInfoUpdate's Pydantic schema for direct edits (Module 3B) —
+    not reinvented here. `ai_tags` has no existing schema exposure to
+    inherit a cap from (confirmed: absent from both BusinessInfoUpdate
+    and BusinessInfoDetail); this module establishes 30 for it
+    explicitly, matching the majority convention among the other
+    seven — a deliberate choice, not a discovered constraint."""
+
+
+class ArrayFieldOverwriteNotSupportedError(Exception):
+    """Raised when overwrite=True is passed while applying one of the
+    8 ARRAY(String) allowlisted fields (Module 8C). Array fields are
+    append-only and have no destructive-replace semantics — silently
+    ignoring the flag would be misleading, so this fails loudly
+    instead, before any value is touched."""
 
 
 class ConflictingValueError(Exception):
@@ -443,12 +481,18 @@ async def apply_reviewed_field_to_company(
     dispatches on a small, closed, explicitly-reviewed set of
     field_name values — adding a new applyable field means adding a
     new branch here deliberately, never widening a data-driven
-    allowlist. Every branch is a plain string Company column with a
-    real, enforced length bound; no ARRAY(String) column (secondary_industries,
-    product_categories, manufacturing_categories, manufacturing_expertise,
-    capabilities, core_values, export_categories, ai_tags) is reachable
-    through this function — there is no safe single-value write
-    semantics for those yet. Identity/legal fields (cin, pan,
+    allowlist. Three branches are plain string Company columns with a
+    real, enforced length bound (description/industry/short_description
+    — unchanged since Module 8B). The 8 ARRAY(String) columns
+    (secondary_industries, product_categories, manufacturing_categories,
+    manufacturing_expertise, capabilities, core_values, export_categories,
+    ai_tags) are reachable too, as of Module 8C, but through a
+    deliberately distinct, append-only branch
+    (_apply_array_field_to_company) — never the same single-value
+    overwrite semantics as the three scalar fields, and never a
+    destructive replace; see that helper's own docstring for the full
+    array-specific rules (exact-match idempotency, list-count cap,
+    overwrite=True rejected outright). Identity/legal fields (cin, pan,
     legal_name, gst_number, ...), Company.status, and
     Company.verification_status are likewise never reachable here —
     they are not in scope for website-sourced evidence.
@@ -467,6 +511,11 @@ async def apply_reviewed_field_to_company(
     if not value:
         raise EmptyValueError(f"ProvenanceRecord {record.id} has no usable value to apply.")
 
+    if record.field_name in _ARRAY_FIELD_LIMITS:
+        return await _apply_array_field_to_company(
+            db, record, company, value, reviewer_id=reviewer_id, overwrite=overwrite
+        )
+
     if record.field_name == "description":
         current_value = company.description
         max_length = None
@@ -479,7 +528,8 @@ async def apply_reviewed_field_to_company(
     else:
         raise FieldNotAllowlistedError(
             f"field_name {record.field_name!r} is not allowlisted for apply-to-company — "
-            "only 'description', 'industry', and 'short_description' are."
+            "only 'description', 'industry', 'short_description', and the 8 ARRAY(String) "
+            f"fields ({', '.join(sorted(_ARRAY_FIELD_LIMITS))}) are."
         )
 
     if max_length is not None and len(value) > max_length:
@@ -527,6 +577,84 @@ async def apply_reviewed_field_to_company(
             "company_id": str(company.id),
             "field_name": record.field_name,
             "overwrite": overwrite,
+        },
+    )
+    return company
+
+
+async def _apply_array_field_to_company(
+    db: AsyncSession,
+    record: ProvenanceRecord,
+    company: Company,
+    value: str,
+    *,
+    reviewer_id: uuid.UUID,
+    overwrite: bool,
+) -> Company:
+    """
+    The ARRAY(String) branch of apply_reviewed_field_to_company
+    (Module 8C) — only ever called once the caller has already
+    confirmed VERIFIED status, company/record match, and a non-empty
+    stripped value; record.field_name is already confirmed present in
+    _ARRAY_FIELD_LIMITS.
+
+    Deliberately NOT the same overwrite/conflict semantics as the
+    three scalar fields above: an array field has no single "current
+    value" to conflict with, so there is no destructive-replace path
+    at all — overwrite=True is rejected outright rather than silently
+    ignored, since accepting it without effect would be misleading
+    about what the call actually did.
+
+    Exact, case-sensitive match against the existing list is this
+    function's only notion of "already present" — reusing
+    graph_service.create_capability's own exact-name idempotency
+    convention rather than inventing fuzzy matching. A duplicate value
+    is a true no-op: no commit, no audit event, matching
+    apply_reviewed_field_to_company's own sibling idempotent patterns
+    elsewhere in this codebase (e.g.
+    graph_service.sync_company_capabilities_from_graph).
+    """
+    if overwrite:
+        raise ArrayFieldOverwriteNotSupportedError(
+            f"field_name {record.field_name!r} is an ARRAY(String) field — overwrite=True is "
+            "not supported. Array fields are append-only and are never destructively replaced."
+        )
+
+    existing = list(getattr(company, record.field_name) or [])
+    if value in existing:
+        return company  # idempotent no-op — exact, case-sensitive match already present
+
+    limit = _ARRAY_FIELD_LIMITS[record.field_name]
+    if len(existing) + 1 > limit:
+        raise ArrayLimitExceededError(
+            f"Company.{record.field_name} already has {len(existing)} entries; appending "
+            f"{value!r} would exceed the {limit}-entry cap for this field."
+        )
+
+    setattr(company, record.field_name, existing + [value])
+
+    timestamp = datetime.now(UTC).isoformat()
+    audit_line = (
+        f"Appended {value!r} to Company.{record.field_name} by {reviewer_id} at {timestamp} "
+        f"(list length {len(existing)} -> {len(existing) + 1})."
+    )
+    record.review_note = (
+        f"{record.review_note}\n{audit_line}" if record.review_note else audit_line
+    )
+
+    await db.commit()
+    await db.refresh(company)
+    await db.refresh(record)
+    await audit_service.log_event(
+        db,
+        "provenance_applied_to_company",
+        user_id=str(reviewer_id),
+        metadata={
+            "provenance_record_id": str(record.id),
+            "company_id": str(company.id),
+            "field_name": record.field_name,
+            "value_kind": "array_append",
+            "resulting_length": len(existing) + 1,
         },
     )
     return company

@@ -10,7 +10,10 @@ Modules 5A-5E's existing behavior is completely unaffected.
 import uuid
 
 import pytest
+from sqlalchemy import select
 
+from app.db.session import AsyncSessionLocal
+from app.models.company import Company
 from tests.test_acquisition import _register_admin
 from tests.test_companies import _auth_headers, _company_payload, _register_verified
 
@@ -115,6 +118,193 @@ async def test_company_to_capability_relationship(client):
         capability_object_id=capability["id"],
     )
     assert relationship["status"] == "observed"
+
+
+# --------------------------------------------------------------------------
+# Capability -> Company.capabilities sync (Module 8C)
+# --------------------------------------------------------------------------
+
+
+async def _sync_capabilities(client, admin, company_id: str):
+    return await client.post(
+        f"/api/v1/graph/companies/{company_id}/sync-capabilities",
+        headers=_auth_headers(admin),
+    )
+
+
+@pytest.mark.asyncio
+async def test_capability_sync_uses_only_verified_relationships(client):
+    admin = await _register_admin(client, "graph-capsync-verified@example.com")
+    company = await _create_company(client, admin, name="CapSync Verified Co")
+    verified_cap = await _create_capability(client, admin, "Verified Welding")
+    observed_cap = await _create_capability(client, admin, "Observed Welding")
+
+    verified_rel = await _create_relationship(
+        client,
+        admin,
+        company_subject_id=company["id"],
+        relationship_type="has_capability",
+        object_type="capability",
+        capability_object_id=verified_cap["id"],
+    )
+    await client.post(
+        f"/api/v1/graph/relationships/{verified_rel['id']}/verify", headers=_auth_headers(admin)
+    )
+    await _create_relationship(
+        client,
+        admin,
+        company_subject_id=company["id"],
+        relationship_type="has_capability",
+        object_type="capability",
+        capability_object_id=observed_cap["id"],
+    )  # deliberately left at observed — never verified
+
+    res = await _sync_capabilities(client, admin, company["id"])
+    assert res.status_code == 200, res.text
+    body = res.json()["data"]
+    assert body["added"] == ["Verified Welding"]
+    assert "Verified Welding" in body["capabilities"]
+    assert "Observed Welding" not in body["capabilities"]
+
+
+@pytest.mark.asyncio
+async def test_capability_sync_ignores_observed_relationships_entirely(client):
+    """A company with ONLY an observed (never verified) relationship
+    syncs to a genuinely empty result — not merely 'excludes the
+    observed one from a mixed set' (covered above), a true
+    empty-verified-input case."""
+    admin = await _register_admin(client, "graph-capsync-observed-only@example.com")
+    company = await _create_company(client, admin, name="CapSync Observed Only Co")
+    capability = await _create_capability(client, admin, "Only Observed Capability")
+    await _create_relationship(
+        client,
+        admin,
+        company_subject_id=company["id"],
+        relationship_type="has_capability",
+        object_type="capability",
+        capability_object_id=capability["id"],
+    )
+
+    res = await _sync_capabilities(client, admin, company["id"])
+    assert res.status_code == 200, res.text
+    body = res.json()["data"]
+    assert body["added"] == []
+    assert not body["capabilities"]
+
+
+@pytest.mark.asyncio
+async def test_capability_sync_is_idempotent(client):
+    admin = await _register_admin(client, "graph-capsync-idem@example.com")
+    company = await _create_company(client, admin, name="CapSync Idempotent Co")
+    capability = await _create_capability(client, admin, "Idempotent Milling")
+    rel = await _create_relationship(
+        client,
+        admin,
+        company_subject_id=company["id"],
+        relationship_type="has_capability",
+        object_type="capability",
+        capability_object_id=capability["id"],
+    )
+    await client.post(
+        f"/api/v1/graph/relationships/{rel['id']}/verify", headers=_auth_headers(admin)
+    )
+
+    first = await _sync_capabilities(client, admin, company["id"])
+    assert first.status_code == 200, first.text
+    assert first.json()["data"]["added"] == ["Idempotent Milling"]
+
+    second = await _sync_capabilities(client, admin, company["id"])
+    assert second.status_code == 200, second.text
+    assert second.json()["data"]["added"] == []  # true no-op, nothing new to add
+    assert second.json()["data"]["capabilities"] == ["Idempotent Milling"]  # not duplicated
+
+
+@pytest.mark.asyncio
+async def test_capability_sync_preserves_manually_entered_capabilities(client):
+    admin = await _register_admin(client, "graph-capsync-preserve@example.com")
+    company = await _create_company(client, admin, name="CapSync Preserve Co")
+
+    # Simulate a manually entered capability with no backing graph
+    # relationship at all — set directly via the DB, matching this
+    # file's own established pattern for direct-DB test setup (e.g.
+    # tests/test_acquisition.py's _register_admin sets user.role
+    # directly, since no API surface exists for the thing under test).
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(select(Company).where(Company.id == uuid.UUID(company["id"])))
+        db_company = result.scalar_one()
+        db_company.capabilities = ["Manually Typed Capability"]
+        await db.commit()
+
+    capability = await _create_capability(client, admin, "Graph Verified Capability")
+    rel = await _create_relationship(
+        client,
+        admin,
+        company_subject_id=company["id"],
+        relationship_type="has_capability",
+        object_type="capability",
+        capability_object_id=capability["id"],
+    )
+    await client.post(
+        f"/api/v1/graph/relationships/{rel['id']}/verify", headers=_auth_headers(admin)
+    )
+
+    res = await _sync_capabilities(client, admin, company["id"])
+    assert res.status_code == 200, res.text
+    body = res.json()["data"]
+    assert body["added"] == ["Graph Verified Capability"]
+    assert body["capabilities"] == ["Manually Typed Capability", "Graph Verified Capability"]
+
+
+@pytest.mark.asyncio
+async def test_capability_sync_never_modifies_company_status_or_verification_status(client):
+    admin = await _register_admin(client, "graph-capsync-status@example.com")
+    company = await _create_company(client, admin, name="CapSync Status Co")
+    capability = await _create_capability(client, admin, "Status-Neutral Capability")
+    rel = await _create_relationship(
+        client,
+        admin,
+        company_subject_id=company["id"],
+        relationship_type="has_capability",
+        object_type="capability",
+        capability_object_id=capability["id"],
+    )
+    await client.post(
+        f"/api/v1/graph/relationships/{rel['id']}/verify", headers=_auth_headers(admin)
+    )
+
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(select(Company).where(Company.id == uuid.UUID(company["id"])))
+        db_company = result.scalar_one()
+        before_status = db_company.status.value
+        before_verification_status = db_company.verification_status.value
+
+    res = await _sync_capabilities(client, admin, company["id"])
+    assert res.status_code == 200, res.text
+    assert res.json()["data"]["added"] == ["Status-Neutral Capability"]
+
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(select(Company).where(Company.id == uuid.UUID(company["id"])))
+        db_company = result.scalar_one()
+        assert db_company.status.value == before_status
+        assert db_company.verification_status.value == before_verification_status
+        assert db_company.verification_status.value == "unverified"
+
+
+@pytest.mark.asyncio
+async def test_capability_sync_requires_admin(client):
+    admin = await _register_admin(client, "graph-capsync-rbac-admin@example.com")
+    company = await _create_company(client, admin, name="CapSync RBAC Co")
+    viewer = await _register_verified(client, "graph-capsync-rbac-viewer@example.com")
+
+    res = await _sync_capabilities(client, viewer, company["id"])
+    assert res.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_capability_sync_requires_real_company(client):
+    admin = await _register_admin(client, "graph-capsync-nocompany@example.com")
+    res = await _sync_capabilities(client, admin, str(uuid.uuid4()))
+    assert res.status_code == 404
 
 
 # --------------------------------------------------------------------------

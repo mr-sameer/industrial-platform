@@ -299,6 +299,16 @@ async def apply_provenance_record_to_company(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail={"code": "EMPTY_VALUE", "message": str(exc)},
         ) from exc
+    except data_quality_service.ArrayFieldOverwriteNotSupportedError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"code": "OVERWRITE_NOT_SUPPORTED_FOR_ARRAY_FIELD", "message": str(exc)},
+        ) from exc
+    except data_quality_service.ArrayLimitExceededError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"code": "ARRAY_LIMIT_EXCEEDED", "message": str(exc)},
+        ) from exc
     except data_quality_service.ValueTooLongError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
