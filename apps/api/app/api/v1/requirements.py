@@ -30,10 +30,14 @@ import uuid
 from typing import cast
 
 from fastapi import APIRouter, HTTPException, status
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.dependencies import CurrentUser
 from app.core.responses import ApiSuccess, success_response
 from app.db.session import DbSession
+from app.models.provenance_record import ProvenanceRecord
+from app.models.raw_observation import RawObservation
 from app.models.requirement import Requirement
 from app.schemas.requirement import (
     CriterionValue,
@@ -44,8 +48,10 @@ from app.schemas.requirement import (
     RequirementMatchCertificationSignal,
     RequirementMatchCompanySummary,
     RequirementMatchCriterionSignal,
+    RequirementMatchEvidenceItem,
     RequirementMatchesResponse,
     RequirementMatchLocationSignal,
+    RequirementMatchOfferingDetails,
     RequirementMatchProductSummary,
     RequirementMatchScoreBreakdownEntry,
     RequirementMatchSignals,
@@ -172,7 +178,47 @@ async def get_requirement(
     return success_response(_to_detail(requirement))
 
 
-def _to_match_dto(candidate: MatchCandidate, rank: int) -> RequirementMatchCandidate:
+async def _fetch_product_evidence(
+    db: AsyncSession, product_ids: set[uuid.UUID]
+) -> dict[uuid.UUID, list[RequirementMatchEvidenceItem]]:
+    """
+    One batched, read-only query for the real provenance trail behind
+    each candidate's Product — never per-candidate (avoids N+1 the same
+    way every other batched fetch in this file's sibling services
+    does). Company-level provenance is deliberately out of scope here
+    (see RequirementMatchEvidenceItem's own docstring) — this only
+    answers "what evidence backs this specific product," which is what
+    a buyer deciding whether to trust *this offering* actually needs.
+    Status is reported exactly as stored — never upgraded, never
+    inferred as VERIFIED.
+    """
+    if not product_ids:
+        return {}
+    result = await db.execute(
+        select(ProvenanceRecord, RawObservation.external_reference)
+        .join(RawObservation, RawObservation.id == ProvenanceRecord.raw_observation_id)
+        .where(ProvenanceRecord.product_id.in_(product_ids))
+        .order_by(ProvenanceRecord.field_name)
+    )
+    by_product: dict[uuid.UUID, list[RequirementMatchEvidenceItem]] = {}
+    for record, external_reference in result.all():
+        assert record.product_id is not None  # this query only ever selects product-entity rows
+        by_product.setdefault(record.product_id, []).append(
+            RequirementMatchEvidenceItem(
+                field_name=record.field_name,
+                value_observed=record.value_observed,
+                status=record.status.value,
+                source_url=external_reference,
+            )
+        )
+    return by_product
+
+
+def _to_match_dto(
+    candidate: MatchCandidate,
+    rank: int,
+    evidence_by_product: dict[uuid.UUID, list[RequirementMatchEvidenceItem]],
+) -> RequirementMatchCandidate:
     """
     Explicitly constructs a RequirementMatchCandidate from
     requirement_matching_service's dataclasses — mirrors _to_detail's
@@ -245,6 +291,13 @@ def _to_match_dto(candidate: MatchCandidate, rank: int) -> RequirementMatchCandi
             )
             for entry in candidate.score_breakdown
         ],
+        offering=RequirementMatchOfferingDetails(
+            role=candidate.offering.role.value,
+            moq=candidate.offering.moq,
+            lead_time=candidate.offering.lead_time,
+            capacity=candidate.offering.capacity,
+        ),
+        evidence=evidence_by_product.get(candidate.product.id, []),
     )
 
 
@@ -280,8 +333,12 @@ async def get_requirement_matches(
             },
         )
     result = await requirement_matching_service.compute_matches(db, requirement)
+    evidence_by_product = await _fetch_product_evidence(
+        db, {candidate.product.id for candidate in result.candidates}
+    )
     matches = [
-        _to_match_dto(candidate, rank) for rank, candidate in enumerate(result.candidates, start=1)
+        _to_match_dto(candidate, rank, evidence_by_product)
+        for rank, candidate in enumerate(result.candidates, start=1)
     ]
     await search_telemetry_service.record_search(
         db, requirement, result, matches, user_id=current_user.id

@@ -101,6 +101,20 @@ export interface RequirementMatchSignals {
   trust_tier: RequirementMatchTrustSignal;
 }
 
+export interface RequirementMatchOfferingDetails {
+  role: string;
+  moq: string | null;
+  lead_time: string | null;
+  capacity: string | null;
+}
+
+export interface RequirementMatchEvidenceItem {
+  field_name: string;
+  value_observed: string;
+  status: string;
+  source_url: string | null;
+}
+
 export interface RequirementMatchScoreBreakdownEntry {
   signal: string;
   weight: number;
@@ -128,6 +142,8 @@ export interface RequirementMatchCandidate {
   product: RequirementMatchProductSummary;
   signals: RequirementMatchSignals;
   score_breakdown: RequirementMatchScoreBreakdownEntry[];
+  offering: RequirementMatchOfferingDetails;
+  evidence: RequirementMatchEvidenceItem[];
 }
 
 export interface RequirementMatchesResponse {

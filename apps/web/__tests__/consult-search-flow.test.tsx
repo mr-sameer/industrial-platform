@@ -143,6 +143,8 @@ describe("Consult search flow (Module 7A-1/7A-2 integration)", () => {
               trust_tier: { level: "business_verified", points_earned: 25, points_possible: 50 },
             },
             score_breakdown: [{ signal: "trust_tier", weight: 50, points_earned: 25 }],
+            offering: { role: "manufacturer", moq: null, lead_time: null, capacity: null },
+            evidence: [],
           },
         ],
       },

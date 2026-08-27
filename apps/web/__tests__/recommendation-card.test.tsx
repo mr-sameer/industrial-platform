@@ -40,6 +40,8 @@ function buildMatch(overrides: Partial<RequirementMatchCandidate> = {}): Require
       { signal: "location", weight: 30, points_earned: 15 },
       { signal: "certifications", weight: 20, points_earned: 0 },
     ],
+    offering: { role: "manufacturer", moq: null, lead_time: null, capacity: null },
+    evidence: [],
     ...overrides,
   };
 }
@@ -75,8 +77,8 @@ describe("RecommendationCard", () => {
       },
     });
     render(<RecommendationCard match={match} />);
-    expect(screen.getByText("Bore diameter")).toBeTruthy();
-    expect(screen.getByText("Unknown")).toBeTruthy();
+    const label = screen.getByText("Bore diameter");
+    expect(label.parentElement?.textContent).toContain("Unknown");
   });
 
   it("renders a requested certification with no VERIFIED evidence as explicitly unmet, not silently dropped", () => {
@@ -115,5 +117,102 @@ describe("RecommendationCard", () => {
     render(<RecommendationCard match={match} />);
     expect(screen.getByText("ISO")).toBeTruthy();
     expect(screen.queryByText(/no VERIFIED evidence found/)).toBeNull();
+  });
+
+  it("renders the manufacturer/supplier role from the real Offering", () => {
+    render(<RecommendationCard match={buildMatch({ offering: { role: "manufacturer", moq: null, lead_time: null, capacity: null } })} />);
+    expect(screen.getByText("Manufacturer")).toBeTruthy();
+  });
+
+  it("renders MOQ and lead time as Observed when the real Offering has them", () => {
+    const match = buildMatch({
+      offering: { role: "manufacturer", moq: "1 Piece", lead_time: "2 Days", capacity: null },
+    });
+    render(<RecommendationCard match={match} />);
+    expect(screen.getByText("1 Piece")).toBeTruthy();
+    expect(screen.getByText("2 Days")).toBeTruthy();
+    expect(screen.getAllByText("Observed").length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("renders MOQ and lead time as honest Unknown when the Offering doesn't have them, never fabricating a value", () => {
+    const match = buildMatch({ offering: { role: "manufacturer", moq: null, lead_time: null, capacity: null } });
+    render(<RecommendationCard match={match} />);
+    expect(screen.getByText("Minimum order quantity").parentElement?.textContent).toContain("Unknown");
+    expect(screen.getByText("Published lead time").parentElement?.textContent).toContain("Unknown");
+  });
+
+  it("only renders capacity when the Offering actually has it, per the 'only if available' rule", () => {
+    const withoutCapacity = buildMatch({ offering: { role: "manufacturer", moq: "1 Piece", lead_time: "2 Days", capacity: null } });
+    const { rerender } = render(<RecommendationCard match={withoutCapacity} />);
+    expect(screen.queryByText("Supply capacity")).toBeNull();
+
+    const withCapacity = buildMatch({ offering: { role: "manufacturer", moq: "1 Piece", lead_time: "2 Days", capacity: "1 Piece Per Day" } });
+    rerender(<RecommendationCard match={withCapacity} />);
+    expect(screen.getByText("Supply capacity")).toBeTruthy();
+    expect(screen.getByText("1 Piece Per Day")).toBeTruthy();
+  });
+
+  it("never labels an Observed fact as Verified — only a backend status of 'verified' produces a Verified badge", () => {
+    const match = buildMatch({
+      evidence: [
+        {
+          field_name: "certification_claim",
+          value_observed: "ISO 9001:2015 — seller-published trade-term claim only. NOT independently verified.",
+          status: "observed",
+          source_url: "https://www.aquabathcornershelf.com/jacuzzi-bath-tub-5103849.html",
+        },
+      ],
+    });
+    render(<RecommendationCard match={match} />);
+    expect(screen.getByText("Certification claim")).toBeTruthy();
+    expect(screen.getByText(/NOT independently verified/)).toBeTruthy();
+    expect(screen.queryByText("Verified")).toBeNull();
+    expect(screen.getAllByText("Observed").length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("renders a Verified badge only when the backend itself reports status='verified'", () => {
+    const match = buildMatch({
+      evidence: [
+        {
+          field_name: "gst_number",
+          value_observed: "07CPRPB3439L1ZI",
+          status: "verified",
+          source_url: null,
+        },
+      ],
+    });
+    render(<RecommendationCard match={match} />);
+    expect(screen.getByText("Verified")).toBeTruthy();
+  });
+
+  it("renders evidence source citations as real links", () => {
+    const match = buildMatch({
+      evidence: [
+        {
+          field_name: "product_line",
+          value_observed: "Jacuzzi Bathtub, Hydrotherapy Bathtub, Acrylic Bathtub",
+          status: "observed",
+          source_url: "https://www.tradeindia.com/aquabath-23925485/",
+        },
+      ],
+    });
+    render(<RecommendationCard match={match} />);
+    const link = screen.getByText("Source").closest("a");
+    expect(link).toBeTruthy();
+    expect(link?.getAttribute("href")).toBe("https://www.tradeindia.com/aquabath-23925485/");
+    expect(link?.getAttribute("target")).toBe("_blank");
+  });
+
+  it("does not render a source link when no source_url exists, rather than fabricating one", () => {
+    const match = buildMatch({
+      evidence: [{ field_name: "moq", value_observed: "1 Piece", status: "observed", source_url: null }],
+    });
+    render(<RecommendationCard match={match} />);
+    expect(screen.queryByText("Source")).toBeNull();
+  });
+
+  it("honestly states when no evidence exists at all for a product, rather than hiding the gap", () => {
+    render(<RecommendationCard match={buildMatch({ evidence: [] })} />);
+    expect(screen.getByText(/No cited evidence on file/)).toBeTruthy();
   });
 });

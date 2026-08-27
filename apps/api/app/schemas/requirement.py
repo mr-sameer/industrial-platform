@@ -173,6 +173,42 @@ class RequirementMatchSignals(BaseModel):
     trust_tier: RequirementMatchTrustSignal
 
 
+class RequirementMatchOfferingDetails(BaseModel):
+    """
+    The real Offering fields (role/MOQ/lead_time/capacity) already
+    exist on `candidate.offering` inside requirement_matching_service —
+    this is purely a response-contract addition, never a new query and
+    never a new scored signal. `moq`/`lead_time`/`capacity` are the
+    same free-text, possibly-null columns app.models.offering.Offering
+    always had; a `None` here means the fact is genuinely unknown, not
+    that this schema failed to find it.
+    """
+
+    role: str
+    moq: str | None
+    lead_time: str | None
+    capacity: str | None
+
+
+class RequirementMatchEvidenceItem(BaseModel):
+    """
+    One real ProvenanceRecord for the candidate's Product, with its
+    backing RawObservation's external_reference — never anything about
+    the Company (Module 8C's provenance-application UI already covers
+    that separately; adding it here would duplicate, not extend, an
+    existing surface). `status` is always `observed`/`extracted` here,
+    never `verified` unless a real, unmodified
+    provenance_service.verify_provenance_record call actually happened
+    for that row — this schema does not decide that, it only reports
+    the real column value.
+    """
+
+    field_name: str
+    value_observed: str
+    status: str
+    source_url: str | None
+
+
 class RequirementMatchScoreBreakdownEntry(BaseModel):
     signal: str
     weight: float
@@ -200,6 +236,8 @@ class RequirementMatchCandidate(BaseModel):
     product: RequirementMatchProductSummary
     signals: RequirementMatchSignals
     score_breakdown: list[RequirementMatchScoreBreakdownEntry]
+    offering: RequirementMatchOfferingDetails
+    evidence: list[RequirementMatchEvidenceItem]
 
 
 class RequirementMatchesResponse(BaseModel):
