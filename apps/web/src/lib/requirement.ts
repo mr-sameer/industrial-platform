@@ -1,5 +1,4 @@
-import { searchCompanies } from "@/lib/companies";
-import { enrichWithVerification, type DiscoveryMatch } from "@/lib/discover";
+import type { ProductCategory } from "@platform/shared-types";
 
 /**
  * The Requirement Object — per Phase 3B's own governing rule: "The
@@ -11,11 +10,13 @@ import { enrichWithVerification, type DiscoveryMatch } from "@/lib/discover";
  * future LLM, RFQ generator, analytics pipeline, or procurement
  * workspace has them available without this shape needing to change.
  *
- * No persistence: per Phase 3B's explicit scope, this object lives
- * only in this page's React state for the session. Nothing here is
- * sent to, or stored by, any backend — see docs/product/
- * phase-3a-ai-conversation-architecture.md Section 7 (Memory
- * Architecture): session/conversation memory is explicitly future work.
+ * Object construction stays purely client-side/deterministic (no NLP,
+ * no LLM) exactly as Phase 3B built it. What changed: once this object
+ * is complete, the Consult flow now submits it to the real
+ * Module 7A-1 backend (POST /api/v1/requirements) and reads ranked
+ * matches from the real Module 7A-2 engine (see
+ * lib/requirements-api.ts and app/consult/page.tsx) instead of the old
+ * client-only GET /companies/search + keyword-explanation path.
  */
 
 export type IntentType =
@@ -304,82 +305,46 @@ export function computeConfidence(req: RequirementObject): number {
   return Math.round(score);
 }
 
-export interface RequirementMatch extends DiscoveryMatch {
-  matchedOnRequirement: Array<"productOrCategory" | "country" | "city">;
+const CATEGORY_WORD_PATTERN = /[a-z0-9]+/g;
+
+function normalizeCategoryWords(text: string): string[] {
+  return text.toLowerCase().match(CATEGORY_WORD_PATTERN) ?? [];
 }
 
 /**
- * "Transform structured requirements into the existing backend
- * search. Reuse current APIs." — per Phase 3B's explicit instruction.
- * Calls the real, unmodified GET /companies/search with the
- * Requirement Object's own structured fields as real filters (a more
- * precise use of that endpoint's multi-field support than any prior
- * phase made), then enriches with real, public verification data via
- * the same function the Discovery phase already built.
+ * Deterministic, keyword-based category resolution — the same
+ * whole-word/whole-phrase philosophy as the backend's own
+ * requirement_matching_service._label_present (never a blind substring
+ * match, never NLP/an LLM/embeddings). The real Module 7A-2 matching
+ * engine requires a `product_category_id` to run at all (it returns
+ * `status: "category_required"` otherwise) — this only resolves *which*
+ * existing category the user's free text refers to; it never scores or
+ * ranks anything itself, so it doesn't duplicate backend matching
+ * logic.
  *
- * Fallback (documented, not a backend change): a structured
- * `industry=<user's exact phrasing>` query is brittle — Phase 3A
- * Section 8 already documents that `industry` is free text, not a
- * controlled taxonomy, so a user's own words ("CNC machined parts")
- * won't substring-match a company's stored value ("CNC Machining")
- * even though a human would consider them related. Rather than accept
- * a worse result for a documented, known limitation, if the precise
- * query returns nothing, this retries once more using the same
- * product/category text against `name` as well (the same multi-field
- * technique the Discovery phase already established) before reporting
- * no results. Still zero fabrication: every returned result's
- * `matchedOnRequirement` is (re)computed from its own real field
- * values, so a fallback-found result is explained exactly as honestly
- * as a precise-match one.
+ * Returns null when no category's full name appears as a contiguous
+ * word sequence in the requirement text — an honest "unknown", not a
+ * guess. The real backend's own `category_required` status is what
+ * surfaces that to the user; this function never fabricates a
+ * best-effort match. When more than one category name matches, the
+ * longest (most specific) name wins — a deterministic tie-break, same
+ * spirit as the backend's own tie-break rules.
  */
-export async function searchFromRequirement(
-  req: RequirementObject,
-  page: number,
-  pageSize: number
-): Promise<{ results: RequirementMatch[]; total: number }> {
-  const primary = await searchCompanies({
-    industry: req.productOrCategory.value ?? undefined,
-    country: req.country.value ?? undefined,
-    city: req.city.value ?? undefined,
-    page,
-    page_size: pageSize,
-  });
+export function resolveCategoryId(categories: ProductCategory[], text: string): string | null {
+  const requirementWords = normalizeCategoryWords(text);
+  if (requirementWords.length === 0) return null;
 
-  let items = primary.success ? primary.data.items : [];
-  let total = primary.success ? primary.data.total : 0;
-
-  if (items.length === 0 && req.productOrCategory.value) {
-    const fallback = await searchCompanies({
-      name: req.productOrCategory.value,
-      country: req.country.value ?? undefined,
-      city: req.city.value ?? undefined,
-      page,
-      page_size: pageSize,
-    });
-    if (fallback.success) {
-      items = fallback.data.items;
-      total = fallback.data.total;
+  let best: { id: string; wordCount: number } | null = null;
+  for (const category of categories) {
+    const nameWords = normalizeCategoryWords(category.name);
+    const n = nameWords.length;
+    if (n === 0 || n > requirementWords.length) continue;
+    const found = Array.from({ length: requirementWords.length - n + 1 }, (_, i) => i).some((i) =>
+      nameWords.every((word, j) => requirementWords[i + j] === word)
+    );
+    if (found && (best === null || n > best.wordCount)) {
+      best = { id: category.id, wordCount: n };
     }
   }
-
-  const withReasons: RequirementMatch[] = items.map((company) => {
-    const matchedOnRequirement: RequirementMatch["matchedOnRequirement"] = [];
-    if (
-      req.productOrCategory.value &&
-      (company.industry?.toLowerCase().includes(req.productOrCategory.value.toLowerCase()) ||
-        company.name.toLowerCase().includes(req.productOrCategory.value.toLowerCase()))
-    ) {
-      matchedOnRequirement.push("productOrCategory");
-    }
-    if (req.country.value && company.country?.toLowerCase() === req.country.value.toLowerCase()) {
-      matchedOnRequirement.push("country");
-    }
-    if (req.city.value && company.city?.toLowerCase() === req.city.value.toLowerCase()) {
-      matchedOnRequirement.push("city");
-    }
-    return { company, matchedFields: [], verification: null, matchedOnRequirement };
-  });
-
-  const enriched = await enrichWithVerification(withReasons);
-  return { results: enriched as RequirementMatch[], total };
+  return best?.id ?? null;
 }

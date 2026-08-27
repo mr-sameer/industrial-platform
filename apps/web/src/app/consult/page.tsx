@@ -1,5 +1,6 @@
 "use client";
 
+import type { RequirementMatchCandidate } from "@platform/shared-types";
 import { Sparkles } from "lucide-react";
 import Link from "next/link";
 import { useRef, useState, type FormEvent, type KeyboardEvent } from "react";
@@ -8,34 +9,47 @@ import { FollowUpChips } from "@/components/consult/FollowUpChips";
 import { RecommendationCard } from "@/components/consult/RecommendationCard";
 import { RequirementCard } from "@/components/consult/RequirementCard";
 import { ThinkingIndicator } from "@/components/consult/ThinkingIndicator";
+import { useAuth } from "@/contexts/AuthContext";
+import { listCategories } from "@/lib/products";
 import {
   applyClarifyingAnswer,
   computeConfidence,
   extractFromText,
   newRequirementObject,
   nextClarifyingField,
-  searchFromRequirement,
-  type RequirementMatch,
+  resolveCategoryId,
   type RequirementObject,
 } from "@/lib/requirement";
+import { createRequirement, getRequirementMatches } from "@/lib/requirements-api";
 
 /**
- * ForgeX Requirement Intelligence — Phase 3B. Implements the
- * conversation state machine from docs/product/
- * phase-3a-ai-conversation-architecture.md Section 6, scoped to what
- * that document marks as buildable today (Section 12): deterministic
- * requirement extraction (lib/requirement.ts — keyword rules, never an
- * LLM), the real GET /companies/search and public verification
- * endpoints. No conversation persistence, no memory, no real LLM, no
- * agents — all explicitly out of scope for this phase.
+ * ForgeX Requirement Intelligence — Phase 3B conversation state machine
+ * (docs/product/phase-3a-ai-conversation-architecture.md Section 6),
+ * now wired to the real Module 7A-1/7A-2 backend: the conversation's
+ * only job is still to build a RequirementObject via deterministic
+ * keyword rules (lib/requirement.ts — never an LLM), but "Search now"
+ * submits it as a real Requirement (POST /api/v1/requirements) and
+ * renders the real, evidence-backed ranked matches
+ * (GET /api/v1/requirements/{id}/matches) instead of the old
+ * client-only GET /companies/search path. No conversation persistence,
+ * no memory, no real LLM, no agents — still explicitly out of scope.
  *
- * Per this phase's own governing rule: the conversation exists to
- * produce a RequirementObject (lib/requirement.ts) — every state
- * transition below is really just "what does the next field on that
- * object need," not conversation logic for its own sake.
+ * Both backend endpoints require an authenticated caller (see
+ * app/api/v1/requirements.py's own docstring) — the conversational
+ * Q&A itself stays open to anyone; only the actual search step checks
+ * auth, matching this codebase's existing useRequireAuth pattern.
  */
 
-type Phase = "greeting" | "clarifying" | "summary" | "searching" | "results" | "no_results" | "error";
+type Phase =
+  | "greeting"
+  | "clarifying"
+  | "summary"
+  | "searching"
+  | "results"
+  | "no_results"
+  | "category_required"
+  | "auth_required"
+  | "error";
 type ClarifyField = "intent" | "productOrCategory" | "country" | "certifications";
 
 interface Message {
@@ -67,6 +81,7 @@ function nextId(): string {
 }
 
 export default function ConsultPage() {
+  const auth = useAuth();
   const [messages, setMessages] = useState<Message[]>([
     {
       id: nextId(),
@@ -79,8 +94,7 @@ export default function ConsultPage() {
   const [pendingField, setPendingField] = useState<ClarifyField | null>(null);
   const [questionsAsked, setQuestionsAsked] = useState(0);
   const [inputValue, setInputValue] = useState("");
-  const [matches, setMatches] = useState<RequirementMatch[] | null>(null);
-  const [total, setTotal] = useState(0);
+  const [matches, setMatches] = useState<RequirementMatchCandidate[] | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
   function scrollToBottom() {
@@ -138,13 +152,60 @@ export default function ConsultPage() {
 
   async function handleSearch() {
     if (!requirement) return;
+
+    if (auth.status !== "authenticated" || !auth.accessToken) {
+      setPhase("auth_required");
+      return;
+    }
+
     setPhase("searching");
     addMessage({ role: "assistant", text: "Searching…" });
     try {
-      const { results, total: resultTotal } = await searchFromRequirement(requirement, 1, 10);
-      setMatches(results);
-      setTotal(resultTotal);
-      setPhase(results.length > 0 ? "results" : "no_results");
+      const categoriesResult = await listCategories();
+      if (!categoriesResult.success) {
+        setPhase("error");
+        addMessage({ role: "assistant", text: "Something went wrong on my end — let's try that again." });
+        return;
+      }
+      const productCategoryId = requirement.productOrCategory.value
+        ? resolveCategoryId(categoriesResult.data, requirement.productOrCategory.value)
+        : null;
+
+      const created = await createRequirement(
+        {
+          raw_query: requirement.rawQuery,
+          product_category_id: productCategoryId,
+          country: requirement.country.value,
+          city: requirement.city.value,
+          certifications: requirement.certifications.value,
+          quantity: requirement.quantity.value,
+          budget: requirement.budget.value,
+          timeline: requirement.timeline.value,
+          extraction_confidence: requirement.overallConfidence / 100,
+          criteria: [],
+        },
+        auth.accessToken
+      );
+      if (!created.success) {
+        setPhase("error");
+        addMessage({ role: "assistant", text: "Something went wrong on my end — let's try that again." });
+        return;
+      }
+
+      const matchesResult = await getRequirementMatches(created.data.id, auth.accessToken);
+      if (!matchesResult.success) {
+        setPhase("error");
+        addMessage({ role: "assistant", text: "Something went wrong on my end — let's try that again." });
+        return;
+      }
+
+      if (matchesResult.data.status === "category_required") {
+        setPhase("category_required");
+        return;
+      }
+
+      setMatches(matchesResult.data.matches);
+      setPhase(matchesResult.data.matches.length > 0 ? "results" : "no_results");
     } catch {
       setPhase("error");
       addMessage({ role: "assistant", text: "Something went wrong on my end — let's try that again." });
@@ -164,7 +225,6 @@ export default function ConsultPage() {
     setPendingField(null);
     setQuestionsAsked(0);
     setMatches(null);
-    setTotal(0);
   }
 
   function handleKeyDown(e: KeyboardEvent<HTMLInputElement>) {
@@ -235,13 +295,37 @@ export default function ConsultPage() {
             </div>
           )}
 
+          {phase === "category_required" && (
+            <div className="ml-9 flex flex-col gap-2">
+              <p className="text-sm text-ink-muted">
+                I don&apos;t recognize &quot;{requirement?.productOrCategory.value}&quot; as a product category
+                ForgeX tracks yet, so I can&apos;t search for it. Try a different phrasing, or start over.
+              </p>
+              <FollowUpChips options={["Start over"]} onSelect={handleStartOver} />
+            </div>
+          )}
+
+          {phase === "auth_required" && (
+            <div className="ml-9 flex flex-col gap-2">
+              <p className="text-sm text-ink-muted">
+                Log in to search ForgeX&apos;s knowledge graph for matching companies.
+              </p>
+              <Link
+                href={`/login?next=${encodeURIComponent("/consult")}`}
+                className="w-fit rounded-full bg-accent px-4 py-1.5 text-sm font-medium text-white transition-colors hover:bg-accent-hover"
+              >
+                Log in
+              </Link>
+            </div>
+          )}
+
           {phase === "error" && <FollowUpChips options={["Start over"]} onSelect={handleStartOver} />}
 
           {phase === "results" && matches && (
             <div className="ml-9 flex flex-col gap-3">
-              <p className="text-sm text-ink-muted">{total} companies match your requirement.</p>
+              <p className="text-sm text-ink-muted">{matches.length} companies match your requirement.</p>
               {matches.map((match) => (
-                <RecommendationCard key={match.company.id} match={match} />
+                <RecommendationCard key={match.offering_id} match={match} />
               ))}
               <div>
                 <FollowUpChips options={["New search"]} onSelect={handleStartOver} />

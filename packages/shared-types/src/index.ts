@@ -11,3 +11,4 @@ export * from "./company";
 export * from "./company-verification";
 export * from "./health";
 export * from "./product";
+export * from "./requirement";
