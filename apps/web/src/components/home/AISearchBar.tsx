@@ -12,11 +12,16 @@ import { searchCompanies } from "@/lib/companies";
 // Cycled one at a time as a rotating placeholder — communicates the
 // range of things ForgeX can be asked without a static chip row
 // cluttering the page (removed per explicit product direction: no
-// browsing affordances next to the search box).
+// browsing affordances next to the search box). Every example here
+// must actually be answerable by where Enter/Search routes it
+// (/consult's real requirement extraction + matching engine, see
+// lib/requirement.ts) — "Compare ABB and Siemens" was dropped for
+// exactly that reason: it's a comparison request, not a sourcing
+// requirement, and the extractor has nothing to do with it.
 const ROTATING_PROMPTS = [
   "Find a CNC manufacturer in Germany",
   "Need 5,000 hydraulic cylinders",
-  "Compare ABB and Siemens",
+  "Find a room heater manufacturer",
   "Find FDA-certified packaging suppliers",
   "Source lithium battery manufacturers",
 ];
@@ -25,10 +30,20 @@ const ROTATING_PROMPTS = [
  * The product's primary navigation (per product direction: companies,
  * manufacturers, suppliers, products, categories, and industries are
  * all discovered through this, not a navbar). Visually framed as a
- * conversational AI input — today it calls the real, public
- * GET /companies/search endpoint (keyword match), exactly as
- * instructed: build the interface for the future AI capability without
- * requiring it today. See docs/frontend/backend-enhancements.md.
+ * conversational AI input.
+ *
+ * Two real, distinct backends live behind it, not one: as-you-type
+ * results below the box are a live, honest company-*name* lookup (the
+ * public GET /companies/search endpoint — unchanged from before).
+ * Pressing Enter or Search, though, hands the typed text to the real
+ * Consult requirement flow (routes to /consult?q=..., see its own
+ * docstring) rather than that same name-only search — the rotating
+ * placeholders above are sourcing requirements ("Need 5,000 hydraulic
+ * cylinders"), not company names, and Consult's deterministic
+ * extraction + the real Module 7A-2 matching engine is what can
+ * actually answer them. Previously both paths went to the name-only
+ * search, which meant every placeholder example above returned zero
+ * results for a real visitor who typed it.
  */
 export function AISearchBar() {
   const [query, setQuery] = useState("");
@@ -81,6 +96,13 @@ export function AISearchBar() {
     router.push(`/company/${slug}`);
   }
 
+  function submitToConsult() {
+    const trimmed = query.trim();
+    if (trimmed.length < 2) return;
+    setOpen(false);
+    router.push(`/consult?q=${encodeURIComponent(trimmed)}`);
+  }
+
   return (
     <div ref={containerRef} className="relative mx-auto w-full max-w-2xl">
       <div
@@ -94,9 +116,7 @@ export function AISearchBar() {
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === "Enter" && query.trim().length >= 2) {
-              router.push(`/discover?q=${encodeURIComponent(query.trim())}`);
-            }
+            if (e.key === "Enter") submitToConsult();
           }}
           onFocus={() => setOpen(true)}
           placeholder={ROTATING_PROMPTS[placeholderIndex]}
@@ -108,7 +128,7 @@ export function AISearchBar() {
         ) : (
           <button
             type="button"
-            onClick={() => query.trim().length >= 2 && setOpen(true)}
+            onClick={submitToConsult}
             disabled={query.trim().length < 2}
             aria-label="Search"
             className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-accent text-white transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-40"

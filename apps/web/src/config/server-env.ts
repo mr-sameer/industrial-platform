@@ -12,9 +12,22 @@ function required(name: string, value: string | undefined): string {
 }
 
 export const serverEnv = {
+  // Server-side BFF calls (Route Handlers, via server-auth-client.ts)
+  // run inside *this* process, not the browser — reusing
+  // NEXT_PUBLIC_API_BASE_URL for them is wrong the moment web and api
+  // are separate containers, because that value is deliberately the
+  // browser-facing origin (e.g. http://localhost:8000, published by
+  // Docker Compose to the host) and is unreachable from inside the web
+  // container itself (it resolves back to the web container, not the
+  // api one). API_INTERNAL_BASE_URL is the network-internal address for
+  // exactly that case — see docker-compose.yml's `web` service, which
+  // sets it to the `api` Compose service's address. It's intentionally
+  // absent for a native `next dev` run (no container boundary to
+  // cross), so this falls back to NEXT_PUBLIC_API_BASE_URL there,
+  // unchanged from before.
   apiBaseUrl: required(
-    "NEXT_PUBLIC_API_BASE_URL",
-    process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000"
+    "API_INTERNAL_BASE_URL or NEXT_PUBLIC_API_BASE_URL",
+    process.env.API_INTERNAL_BASE_URL ?? process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000"
   ),
   refreshTokenCookieName: process.env.REFRESH_TOKEN_COOKIE_NAME ?? "refresh_token",
   // Used only for the Origin-header comparison in lib/auth/origin-check.ts.

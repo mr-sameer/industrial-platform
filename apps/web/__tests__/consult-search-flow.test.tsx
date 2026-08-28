@@ -25,6 +25,15 @@ vi.mock("@/contexts/AuthContext", () => ({
   useAuth: () => authState,
 }));
 
+// No test in this file exercises the `?q=` homepage-handoff param (see
+// ai-search-bar.test.tsx and consult-initial-query.test.tsx for that) —
+// an empty URLSearchParams here just satisfies ConsultForm's
+// useSearchParams() call so these existing typed-message-flow tests
+// keep working unchanged.
+vi.mock("next/navigation", () => ({
+  useSearchParams: () => new URLSearchParams(),
+}));
+
 vi.mock("@/lib/products", () => ({
   listCategories: vi.fn(),
 }));

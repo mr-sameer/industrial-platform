@@ -3,7 +3,8 @@
 import type { RequirementMatchCandidate } from "@platform/shared-types";
 import { Sparkles } from "lucide-react";
 import Link from "next/link";
-import { useRef, useState, type FormEvent, type KeyboardEvent } from "react";
+import { useSearchParams } from "next/navigation";
+import { Suspense, useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 
 import { FollowUpChips } from "@/components/consult/FollowUpChips";
 import { RecommendationCard } from "@/components/consult/RecommendationCard";
@@ -38,6 +39,14 @@ import { createRequirement, getRequirementMatches } from "@/lib/requirements-api
  * app/api/v1/requirements.py's own docstring) — the conversational
  * Q&A itself stays open to anyone; only the actual search step checks
  * auth, matching this codebase's existing useRequireAuth pattern.
+ *
+ * The homepage's "Ask ForgeX" bar (components/home/AISearchBar.tsx)
+ * routes here with `?q=<their text>` rather than duplicating any
+ * extraction/matching logic of its own — an initial `q` is treated
+ * exactly as if the user had typed and sent that text as this page's
+ * first message (see the effect in ConsultForm below), so it goes
+ * through the identical clarify → summary → search flow, auth boundary
+ * included.
  */
 
 type Phase =
@@ -80,8 +89,29 @@ function nextId(): string {
   return `m${messageIdCounter}`;
 }
 
+// useSearchParams() opts a page out of static rendering unless wrapped in
+// Suspense — Next.js enforces this at build time (see
+// https://nextjs.org/docs/messages/missing-suspense-with-csr-bailout).
+// Same pattern as app/(auth)/login/page.tsx: the default export below
+// is the Suspense wrapper; ConsultForm holds the actual page content
+// and is what reads the `?q=` initial-query param.
 export default function ConsultPage() {
+  return (
+    <Suspense
+      fallback={
+        <main className="flex min-h-screen items-center justify-center bg-canvas">
+          <div className="h-8 w-8 animate-spin rounded-full border-2 border-border-strong border-t-accent" />
+        </main>
+      }
+    >
+      <ConsultForm />
+    </Suspense>
+  );
+}
+
+function ConsultForm() {
   const auth = useAuth();
+  const searchParams = useSearchParams();
   const [messages, setMessages] = useState<Message[]>([
     {
       id: nextId(),
@@ -96,6 +126,21 @@ export default function ConsultPage() {
   const [inputValue, setInputValue] = useState("");
   const [matches, setMatches] = useState<RequirementMatchCandidate[] | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const ranInitialQuery = useRef(false);
+
+  useEffect(() => {
+    // Guarded the same way AuthContext's own bootstrap effect is
+    // (bootstrapped ref, see contexts/AuthContext.tsx) — React 18
+    // StrictMode double-invokes effects in development, and without
+    // this guard a `?q=` param would seed the opening message twice.
+    if (ranInitialQuery.current) return;
+    ranInitialQuery.current = true;
+    const initialQuery = searchParams.get("q")?.trim();
+    if (!initialQuery) return;
+    addMessage({ role: "user", text: initialQuery });
+    handleFirstMessage(initialQuery);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- runs once on mount only, by design (see the ref guard above)
+  }, []);
 
   function scrollToBottom() {
     setTimeout(() => bottomRef.current?.scrollIntoView({ behavior: "smooth" }), 50);

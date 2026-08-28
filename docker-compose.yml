@@ -98,7 +98,17 @@ services:
     restart: unless-stopped
     env_file: .env
     environment:
+      # Browser-facing — must stay the host-published address so pages
+      # rendered in the user's browser can reach the API directly.
       NEXT_PUBLIC_API_BASE_URL: http://localhost:${API_PORT:-8000}
+      # Server-side-only (never sent to the browser — no NEXT_PUBLIC_
+      # prefix). The web container's own Route Handlers call the API
+      # over the Compose network, not through the host-published port,
+      # so this must be the `api` service's address, not localhost —
+      # see src/config/server-env.ts. Always port 8000: that's the
+      # api container's own fixed uvicorn listener (its `command`
+      # below), independent of whatever host port ${API_PORT} publishes.
+      API_INTERNAL_BASE_URL: http://api:8000
     ports:
       - "${WEB_PORT:-3000}:3000"
     depends_on:

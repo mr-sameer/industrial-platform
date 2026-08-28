@@ -137,11 +137,60 @@ const WORD_NUMBERS: Record<string, string> = {
   fifteen: "15",
   twenty: "20",
 };
-const NUMBER_WORD_PATTERN = `(?:\\d{1,3}(?:,\\d{3})*|${Object.keys(WORD_NUMBERS).join("|")})`;
+// Comma-grouped ("20,000") tried first, then a plain digit run of any
+// length ("20000") — quantity/timeline never exercised a bare number
+// over 3 digits before (their real values are always small), but a
+// budget legitimately can be. Without the plain-digit-run alternative,
+// `\d{1,3}(?:,\d{3})*` alone can only ever match the first 1-3 digits
+// of an uncommaed 4+-digit number (e.g. just "200" of "20000"), which
+// then fails the pattern's own trailing `\b` boundary check since
+// there's no word boundary between two consecutive digits — so the
+// whole match silently fails instead of capturing the full number.
+const NUMBER_WORD_PATTERN = `(?:\\d{1,3}(?:,\\d{3})*|\\d+|${Object.keys(WORD_NUMBERS).join("|")})`;
 
 function numberTokenToDigits(token: string): string {
   const lower = token.toLowerCase();
   return WORD_NUMBERS[lower] ?? token;
+}
+
+// A small, honest, fixed lookup — same philosophy as KNOWN_COUNTRIES:
+// only currency tokens a real buyer would actually type, not an
+// exchange-rate-aware parser.
+const CURRENCY_PATTERN = "(?:USD|INR|EUR|GBP|Rs\\.?|₹|\\$|€)";
+
+// Two independent, additive shapes for the same field — a bare
+// "<number> <unit word>" (the original rule) and a "<label> <number>"
+// shape ("quantity 500", "qty: 500") a buyer stating several fields in
+// one sentence tends to use instead. Both stay strict/adjacent, never a
+// bare unlabeled number anywhere in the sentence — that would risk
+// grabbing an unrelated digit (a budget, a year, a phone number) as a
+// quantity, which is exactly the false-positive risk this file's own
+// docstring above warns against.
+const QUANTITY_UNIT_PATTERN = new RegExp(`\\b(${NUMBER_WORD_PATTERN})\\s+(?:units?|pieces?|pcs?)\\b`, "i");
+const QUANTITY_LABEL_PATTERN = new RegExp(`\\b(?:quantity|qty)\\s*(?:of|is|:)?\\s*(${NUMBER_WORD_PATTERN})\\b`, "i");
+
+// "months"/"years" added alongside the original days/weeks/hours — a
+// real buyer's timeline is at least as likely to be stated in months as
+// in days. Same adjacency rule as before: only an explicit number
+// directly next to a real time unit counts.
+const TIMELINE_PATTERN = new RegExp(
+  `\\b(?:within\\s+)?(${NUMBER_WORD_PATTERN})\\s+(days?|weeks?|months?|years?|hours?)\\b`,
+  "i"
+);
+
+// Requires the word "budget" itself — never inferred from a bare number
+// anywhere in the sentence (that number could just as easily be a
+// quantity or a year). An optional currency token may sit on either
+// side of the number ("budget 20000 USD", "budget: $20,000", "budget of
+// ₹50000"); the field stores whichever one was actually present so
+// nothing is invented that wasn't typed.
+const BUDGET_PATTERN = new RegExp(
+  `\\bbudget\\s*(?:of|is|:)?\\s*(${CURRENCY_PATTERN})?\\s*(${NUMBER_WORD_PATTERN})\\s*(${CURRENCY_PATTERN})?\\b`,
+  "i"
+);
+
+function matchQuantity(text: string): RegExpMatchArray | null {
+  return text.match(QUANTITY_UNIT_PATTERN) ?? text.match(QUANTITY_LABEL_PATTERN);
 }
 
 /**
@@ -265,14 +314,19 @@ export function extractFromText(
 
   if (next.quantity.value === null) {
     // Requires the number to sit directly next to a real unit-of-goods
-    // word ("1 unit", "one piece") — deliberately stricter than a bare
-    // "any 2+ digit number anywhere" rule (which would also have
-    // wrongly captured e.g. "5" from "within 5 days"), while also
-    // covering the single-item/word-form case a bare digit-count rule
-    // missed entirely. Still never invents a number that wasn't typed.
-    const quantityMatch = text.match(new RegExp(`\\b(${NUMBER_WORD_PATTERN})\\s+(?:units?|pieces?|pcs?)\\b`, "i"));
+    // word ("1 unit", "one piece") or a "quantity"/"qty" label
+    // ("quantity 500") — deliberately stricter than a bare "any 2+
+    // digit number anywhere" rule (which would also have wrongly
+    // captured e.g. "5" from "within 5 days"), while also covering the
+    // single-item/word-form case a bare digit-count rule missed
+    // entirely. Still never invents a number that wasn't typed.
+    const quantityMatch = matchQuantity(text);
     if (quantityMatch) {
-      next.quantity = { value: numberTokenToDigits(quantityMatch[1]), confidence: "explicit" };
+      // Non-null: group 1 is a required (non-"?") capture in both
+      // QUANTITY_UNIT_PATTERN and QUANTITY_LABEL_PATTERN, so a truthy
+      // overall match guarantees it matched too — TS just can't derive
+      // that from the regex source itself.
+      next.quantity = { value: numberTokenToDigits(quantityMatch[1]!), confidence: "explicit" };
     }
   }
 
@@ -281,14 +335,26 @@ export function extractFromText(
     // directly next to a real time unit counts. A vague phrase like
     // "quickly"/"ASAP"/"urgently" matches nothing here and stays
     // missing — never guessed into an invented day count.
-    const timelineMatch = text.match(
-      new RegExp(`\\b(?:within\\s+)?(${NUMBER_WORD_PATTERN})\\s+(days?|weeks?|hours?)\\b`, "i")
-    );
+    const timelineMatch = text.match(TIMELINE_PATTERN);
     if (timelineMatch) {
+      // Non-null: both groups are required captures in TIMELINE_PATTERN.
       next.timeline = {
-        value: `${numberTokenToDigits(timelineMatch[1])} ${timelineMatch[2].toLowerCase()}`,
+        value: `${numberTokenToDigits(timelineMatch[1]!)} ${timelineMatch[2]!.toLowerCase()}`,
         confidence: "explicit",
       };
+    }
+  }
+
+  if (next.budget.value === null) {
+    // Requires the word "budget" itself — see BUDGET_PATTERN's own
+    // comment above for why a bare number is never enough.
+    const budgetMatch = text.match(BUDGET_PATTERN);
+    if (budgetMatch) {
+      // Groups 1 and 3 (currency) are genuinely optional in the
+      // pattern — only group 2 (the amount) is required.
+      const currency = (budgetMatch[1] ?? budgetMatch[3])?.toUpperCase().replace(/\.$/, "");
+      const amount = numberTokenToDigits(budgetMatch[2]!);
+      next.budget = { value: currency ? `${amount} ${currency}` : amount, confidence: "explicit" };
     }
   }
 
@@ -325,22 +391,42 @@ export function extractFromText(
     }
     if (next.quantity.value) {
       remainder = remainder
-        .replace(new RegExp(`\\b(${NUMBER_WORD_PATTERN})\\s+(?:units?|pieces?|pcs?)\\b`, "gi"), "")
+        .replace(new RegExp(QUANTITY_UNIT_PATTERN, "gi"), "")
+        .replace(new RegExp(QUANTITY_LABEL_PATTERN, "gi"), "")
         .trim();
     }
     if (next.timeline.value) {
-      remainder = remainder
-        .replace(new RegExp(`\\b(?:within\\s+)?(${NUMBER_WORD_PATTERN})\\s+(?:days?|weeks?|hours?)\\b`, "gi"), "")
-        .trim();
+      remainder = remainder.replace(new RegExp(TIMELINE_PATTERN, "gi"), "").trim();
     }
-    // Strip connective clauses left dangling once the fields above are
-    // removed ("preferably in", "delivered within", "and I need it
-    // quickly") — same "simple text-stripping, not sentence
-    // understanding" principle as the rest of this function; never
-    // affects which fields were actually extracted, only how the
-    // leftover product/category text reads.
-    remainder = remainder.replace(/\b(preferably|delivered|and i need it \w+)\b/gi, "").trim();
-    remainder = remainder.replace(/,\s*,/g, ",").trim();
+    if (next.budget.value) {
+      remainder = remainder.replace(new RegExp(BUDGET_PATTERN, "gi"), "").trim();
+    }
+    if (next.certifications.value && next.certifications.value.length > 0) {
+      // Same "strip whatever this pass already recognized" principle as
+      // the role-keyword strip above — a certification keyword found by
+      // the extraction block earlier in this function is a label, not
+      // part of the product/category description.
+      for (const key of Object.keys(KNOWN_CERTIFICATIONS)) {
+        remainder = remainder.replace(new RegExp(`\\b${key}\\b`, "gi"), "").trim();
+      }
+    }
+    // Strip connective clauses and bare field labels left dangling once
+    // the fields above are removed ("preferably in", "delivered
+    // within", "and I need it quickly", the standalone word "timeline"
+    // once its "2 months" has already been stripped) — same "simple
+    // text-stripping, not sentence understanding" principle as the rest
+    // of this function; never affects which fields were actually
+    // extracted, only how the leftover product/category text reads.
+    remainder = remainder
+      .replace(/\b(preferably|delivered|and i need it \w+|quantity|qty|budget|timeline)\b/gi, "")
+      .trim();
+    // Collapse any run of two-or-more commas (left behind wherever a
+    // field sat between two other stripped fields, e.g. "heater , ,
+    // budget...") down to one — the original single-pair version of
+    // this only handled exactly two consecutive commas, which sufficed
+    // before a sentence could have more than one of quantity/budget/
+    // timeline extracted out of it at once.
+    remainder = remainder.replace(/,(?:\s*,)+/g, ",").trim();
     // Strip a preposition left dangling after removing the country
     // (e.g. "CNC machining in" once "India" is removed) — this isn't
     // cosmetic: a trailing word here would break the real ILIKE

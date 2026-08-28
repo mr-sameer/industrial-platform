@@ -10,6 +10,7 @@
 import type { ApiResponse, ClientSession, LoginRequest, RegisterRequest, UserPublic } from "@platform/shared-types";
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
+import { logger } from "@/lib/logger";
 
 export interface AuthContextValue {
   user: UserPublic | null;
@@ -30,6 +31,16 @@ async function postJson<T>(path: string, body?: unknown): Promise<ApiResponse<T>
     credentials: "include", // sends the httpOnly refresh cookie
     body: body ? JSON.stringify(body) : undefined,
   });
+  // 204 No Content (logout's real response) has no body to parse —
+  // res.json() throws "Unexpected end of JSON input" on the empty
+  // string, which — left uncaught by a caller like `logout` below —
+  // aborted before it could clear client state at all. Same fix,
+  // same reasoning, as lib/api-client.ts's apiFetch for exactly this
+  // response shape; every other case (login/register/refresh/me's real
+  // JSON bodies) parses exactly as before.
+  if (res.status === 204) {
+    return { success: true, data: null as T, meta: { requestId: "n/a", timestamp: new Date().toISOString() } };
+  }
   return (await res.json()) as ApiResponse<T>;
 }
 
@@ -111,7 +122,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   );
 
   const logout = useCallback(async () => {
-    await postJson("/api/auth/logout");
+    try {
+      await postJson("/api/auth/logout");
+    } catch (err) {
+      // Best-effort, same as logoutAll below and the server-side
+      // logoutUpstream() this proxies to (see its own comment): from
+      // the user's perspective, clicking "Log out" must always end
+      // their session client-side, even if the network request itself
+      // failed (offline, upstream down, etc). The server-side session
+      // still gets cleared in the success path above; a failure here
+      // just means it may briefly outlive the local one.
+      logger.error({ err }, "auth_logout_request_failed");
+    }
     clearSession();
   }, [clearSession]);
 
