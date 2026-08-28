@@ -96,6 +96,54 @@ const KNOWN_CERTIFICATIONS: Record<string, string> = {
   msme: "MSME",
 };
 
+// A small, honest, fixed lookup list — same "not a geo database, not
+// NLP" philosophy as KNOWN_COUNTRIES above. Longer/more specific names
+// listed first so "new delhi" wins over a bare "delhi" substring check
+// when both would otherwise match.
+const KNOWN_CITIES = [
+  "new delhi",
+  "delhi",
+  "mumbai",
+  "bengaluru",
+  "bangalore",
+  "pune",
+  "chennai",
+  "kolkata",
+  "hyderabad",
+  "ahmedabad",
+  "gurugram",
+  "gurgaon",
+  "noida",
+  "surat",
+  "jaipur",
+];
+
+// Word-form cardinals a real buyer might type instead of a digit
+// ("one unit" as well as "1 unit") — deliberately small and fixed,
+// not a number-parsing library.
+const WORD_NUMBERS: Record<string, string> = {
+  one: "1",
+  two: "2",
+  three: "3",
+  four: "4",
+  five: "5",
+  six: "6",
+  seven: "7",
+  eight: "8",
+  nine: "9",
+  ten: "10",
+  eleven: "11",
+  twelve: "12",
+  fifteen: "15",
+  twenty: "20",
+};
+const NUMBER_WORD_PATTERN = `(?:\\d{1,3}(?:,\\d{3})*|${Object.keys(WORD_NUMBERS).join("|")})`;
+
+function numberTokenToDigits(token: string): string {
+  const lower = token.toLowerCase();
+  return WORD_NUMBERS[lower] ?? token;
+}
+
 /**
  * Applies an answer to the specific field that was just asked about —
  * used when the user responds to a clarifying question (via a chip or
@@ -208,13 +256,39 @@ export function extractFromText(
     }
   }
 
+  if (next.city.value === null) {
+    const match = KNOWN_CITIES.find((c) => new RegExp(`\\b${c}\\b`, "i").test(text));
+    if (match) {
+      next.city = { value: titleCase(match), confidence: "explicit" };
+    }
+  }
+
   if (next.quantity.value === null) {
-    // A number of 2+ digits, optionally with thousands separators —
-    // deliberately simple; does not attempt to distinguish quantity
-    // from e.g. a year or a budget figure beyond this.
-    const numberMatch = text.match(/\b\d{1,3}(?:,\d{3})*\b/);
-    if (numberMatch && numberMatch[0].replace(/,/g, "").length >= 2) {
-      next.quantity = { value: numberMatch[0], confidence: "explicit" };
+    // Requires the number to sit directly next to a real unit-of-goods
+    // word ("1 unit", "one piece") — deliberately stricter than a bare
+    // "any 2+ digit number anywhere" rule (which would also have
+    // wrongly captured e.g. "5" from "within 5 days"), while also
+    // covering the single-item/word-form case a bare digit-count rule
+    // missed entirely. Still never invents a number that wasn't typed.
+    const quantityMatch = text.match(new RegExp(`\\b(${NUMBER_WORD_PATTERN})\\s+(?:units?|pieces?|pcs?)\\b`, "i"));
+    if (quantityMatch) {
+      next.quantity = { value: numberTokenToDigits(quantityMatch[1]), confidence: "explicit" };
+    }
+  }
+
+  if (next.timeline.value === null) {
+    // Same adjacency principle as quantity: only an explicit number
+    // directly next to a real time unit counts. A vague phrase like
+    // "quickly"/"ASAP"/"urgently" matches nothing here and stays
+    // missing — never guessed into an invented day count.
+    const timelineMatch = text.match(
+      new RegExp(`\\b(?:within\\s+)?(${NUMBER_WORD_PATTERN})\\s+(days?|weeks?|hours?)\\b`, "i")
+    );
+    if (timelineMatch) {
+      next.timeline = {
+        value: `${numberTokenToDigits(timelineMatch[1])} ${timelineMatch[2].toLowerCase()}`,
+        confidence: "explicit",
+      };
     }
   }
 
@@ -246,11 +320,33 @@ export function extractFromText(
     if (next.country.value) {
       remainder = remainder.replace(new RegExp(`\\b${next.country.value}\\b`, "gi"), "").trim();
     }
+    if (next.city.value) {
+      remainder = remainder.replace(new RegExp(`\\b${next.city.value}\\b`, "gi"), "").trim();
+    }
+    if (next.quantity.value) {
+      remainder = remainder
+        .replace(new RegExp(`\\b(${NUMBER_WORD_PATTERN})\\s+(?:units?|pieces?|pcs?)\\b`, "gi"), "")
+        .trim();
+    }
+    if (next.timeline.value) {
+      remainder = remainder
+        .replace(new RegExp(`\\b(?:within\\s+)?(${NUMBER_WORD_PATTERN})\\s+(?:days?|weeks?|hours?)\\b`, "gi"), "")
+        .trim();
+    }
+    // Strip connective clauses left dangling once the fields above are
+    // removed ("preferably in", "delivered within", "and I need it
+    // quickly") — same "simple text-stripping, not sentence
+    // understanding" principle as the rest of this function; never
+    // affects which fields were actually extracted, only how the
+    // leftover product/category text reads.
+    remainder = remainder.replace(/\b(preferably|delivered|and i need it \w+)\b/gi, "").trim();
+    remainder = remainder.replace(/,\s*,/g, ",").trim();
     // Strip a preposition left dangling after removing the country
     // (e.g. "CNC machining in" once "India" is removed) — this isn't
     // cosmetic: a trailing word here would break the real ILIKE
     // substring match against the industry field once used in search.
     remainder = remainder.replace(/\s+(in|for|from|at|near)\s*$/i, "").trim();
+    remainder = remainder.replace(/^[,\s]+|[,\s]+$/g, "").trim();
     remainder = remainder.replace(/[.,!?]+$/, "").trim();
     if (remainder.length >= 2) {
       next.productOrCategory = { value: remainder, confidence: "explicit" };
@@ -312,6 +408,32 @@ function normalizeCategoryWords(text: string): string[] {
 }
 
 /**
+ * Deterministic, rule-based singular normalization — NOT a stemming
+ * library, NOT fuzzy/semantic matching. Strips exactly the common
+ * English plural inflections (heaters -> heater, lehengas -> lehenga,
+ * categories -> category) so a category name and a buyer's plural
+ * phrasing of it compare equal after normalization; the comparison
+ * itself in resolveCategoryId is still plain exact-string equality,
+ * only the input token is normalized first. Guarded against the
+ * obvious false-positive shapes so it stays conservative:
+ *   - words of length <= 3 are left alone (avoids "gas" -> "ga")
+ *   - a double-s ending is left alone (avoids "glass" -> "glas")
+ *   - a word already ending "us"/"ss" is left alone
+ * This intentionally does not attempt irregular plurals (e.g.
+ * "boxes" -> "box") — those fall back to requiring the exact word,
+ * which is the same honest "no match found" behavior as today rather
+ * than a guess.
+ */
+function singularize(word: string): string {
+  if (word.length <= 3) return word;
+  if (word.endsWith("ies") && word.length > 4) return word.slice(0, -3) + "y";
+  if (/(?:s|x|z|ch|sh)es$/.test(word)) return word.slice(0, -2);
+  if (word.endsWith("ss") || word.endsWith("us")) return word;
+  if (word.endsWith("s")) return word.slice(0, -1);
+  return word;
+}
+
+/**
  * Deterministic, keyword-based category resolution — the same
  * whole-word/whole-phrase philosophy as the backend's own
  * requirement_matching_service._label_present (never a blind substring
@@ -322,6 +444,11 @@ function normalizeCategoryWords(text: string): string[] {
  * ranks anything itself, so it doesn't duplicate backend matching
  * logic.
  *
+ * Word comparison is done on the singularized form of every token (see
+ * `singularize` above), so "room heaters" matches a "Room Heater"
+ * category and vice versa — still exact-equality matching, just on a
+ * normalized token, never a fuzzy/similarity score.
+ *
  * Returns null when no category's full name appears as a contiguous
  * word sequence in the requirement text — an honest "unknown", not a
  * guess. The real backend's own `category_required` status is what
@@ -331,12 +458,12 @@ function normalizeCategoryWords(text: string): string[] {
  * spirit as the backend's own tie-break rules.
  */
 export function resolveCategoryId(categories: ProductCategory[], text: string): string | null {
-  const requirementWords = normalizeCategoryWords(text);
+  const requirementWords = normalizeCategoryWords(text).map(singularize);
   if (requirementWords.length === 0) return null;
 
   let best: { id: string; wordCount: number } | null = null;
   for (const category of categories) {
-    const nameWords = normalizeCategoryWords(category.name);
+    const nameWords = normalizeCategoryWords(category.name).map(singularize);
     const n = nameWords.length;
     if (n === 0 || n > requirementWords.length) continue;
     const found = Array.from({ length: requirementWords.length - n + 1 }, (_, i) => i).some((i) =>
