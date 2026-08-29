@@ -51,7 +51,9 @@ async def request_password_reset(db: AsyncSession, user: User | None) -> None:
     token = encode_opaque_token(token_row.id, secret)
     reset_url = f"{settings.web_app_base_url}/reset-password?token={token}"
     html = render_password_reset_email(full_name=user.full_name, reset_url=reset_url)
-    await get_email_sender().send(to=user.email, subject="Reset your password", html_body=html)
+    await get_email_sender().send(
+        to=user.email, subject="Reset your password", html_body=html, action_url=reset_url
+    )
 
 
 async def reset_password(db: AsyncSession, token: str, new_password: str) -> User:

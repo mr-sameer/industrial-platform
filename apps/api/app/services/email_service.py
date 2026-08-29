@@ -15,14 +15,28 @@ logger = get_logger(__name__)
 
 
 class EmailSender(Protocol):
-    async def send(self, *, to: str, subject: str, html_body: str) -> None: ...
+    async def send(self, *, to: str, subject: str, html_body: str, action_url: str | None = None) -> None: ...
 
 
 class LoggingEmailSender:
-    """Development/test implementation — logs the email instead of sending it."""
+    """
+    Development/test implementation — logs the email instead of sending it.
 
-    async def send(self, *, to: str, subject: str, html_body: str) -> None:
-        logger.info("email_send_stub", to=to, subject=subject, body_length=len(html_body))
+    ForgeX Product Audit P1: previously logged only `subject`/`body_length`,
+    never the verification/reset link itself — every email-gated flow
+    (register -> verify email, forgot password -> reset) was a genuine dead
+    end in this environment without querying Postgres directly for the raw
+    token (see tests/test_email_verification.py's own docstring on this).
+    `action_url` is optional on the interface (real providers like SES/
+    Postmark don't need it separately — the link is already in `html_body`
+    for the recipient) but every current call site has it available before
+    rendering the HTML, so it costs them nothing to pass through.
+    """
+
+    async def send(self, *, to: str, subject: str, html_body: str, action_url: str | None = None) -> None:
+        logger.info(
+            "email_send_stub", to=to, subject=subject, body_length=len(html_body), action_url=action_url
+        )
 
 
 _sender: EmailSender = LoggingEmailSender()

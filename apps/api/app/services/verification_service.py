@@ -45,7 +45,9 @@ async def issue_verification_token(db: AsyncSession, user: User) -> str:
 async def send_verification_email(user: User, token: str) -> None:
     verification_url = f"{settings.web_app_base_url}/verify-email?token={token}"
     html = render_verification_email(full_name=user.full_name, verification_url=verification_url)
-    await get_email_sender().send(to=user.email, subject="Verify your email", html_body=html)
+    await get_email_sender().send(
+        to=user.email, subject="Verify your email", html_body=html, action_url=verification_url
+    )
 
 
 async def resend_verification(db: AsyncSession, user: User) -> None:
