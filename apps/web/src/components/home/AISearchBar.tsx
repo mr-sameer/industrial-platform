@@ -3,11 +3,12 @@
 import type { CompanySearchResult } from "@platform/shared-types";
 import { ArrowRight, Building2, Loader2, Sparkles } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ChangeEvent } from "react";
 
 
 import { cn } from "@/lib/cn";
 import { searchCompanies } from "@/lib/companies";
+import { autoGrowTextarea, COMPOSER_CONTAINER_CLASSNAME, COMPOSER_TEXTAREA_CLASSNAME, isComposerSubmitKey } from "@/lib/composer";
 
 // Cycled one at a time as a rotating placeholder — communicates the
 // range of things ForgeX can be asked without a static chip row
@@ -53,15 +54,24 @@ export function AISearchBar() {
   const [loading, setLoading] = useState(false);
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
+  const pendingFrameRef = useRef<number | null>(null);
+  // Always in sync with the DOM on every keystroke, even while a `query`
+  // state update is still coalescing to the next frame — Enter/Search must
+  // act on what's actually in the box, not on a state value that can lag
+  // behind by up to one animation frame.
+  const liveValueRef = useRef("");
   const router = useRouter();
 
+  // Depends on the empty/non-empty boundary only (not the raw string) so this
+  // effect doesn't tear down and rebuild on every keystroke.
+  const hasQuery = query.length > 0;
   useEffect(() => {
-    if (query.length > 0) return; // stop rotating once the user starts typing
+    if (hasQuery) return; // stop rotating once the user starts typing
     const interval = setInterval(() => {
       setPlaceholderIndex((i) => (i + 1) % ROTATING_PROMPTS.length);
     }, 2800);
     return () => clearInterval(interval);
-  }, [query]);
+  }, [hasQuery]);
 
   useEffect(() => {
     function handleClickOutside(e: MouseEvent) {
@@ -91,13 +101,32 @@ export function AISearchBar() {
     return () => clearTimeout(timeout);
   }, [query]);
 
+  // Coalesces a burst of same-frame input events (e.g. a fast scripted/
+  // automated fill, which can dispatch many keystrokes with no yield in
+  // between) into a single trailing state update per frame instead of one
+  // per keystroke — enough synchronous per-keystroke setState calls in a
+  // zero-yield burst was previously enough to trip React's "Maximum update
+  // depth exceeded" safeguard. A real typist never notices: the textarea
+  // itself still reflects every keystroke immediately via imperative DOM
+  // resize below, regardless of React's render timing.
+  function handleQueryChange(e: ChangeEvent<HTMLTextAreaElement>) {
+    const value = e.target.value;
+    autoGrowTextarea(e.target);
+    liveValueRef.current = value;
+    if (pendingFrameRef.current !== null) cancelAnimationFrame(pendingFrameRef.current);
+    pendingFrameRef.current = requestAnimationFrame(() => {
+      pendingFrameRef.current = null;
+      setQuery(value);
+    });
+  }
+
   function goToCompany(slug: string) {
     setOpen(false);
     router.push(`/company/${slug}`);
   }
 
   function submitToConsult() {
-    const trimmed = query.trim();
+    const trimmed = liveValueRef.current.trim();
     if (trimmed.length < 2) return;
     setOpen(false);
     router.push(`/consult?q=${encodeURIComponent(trimmed)}`);
@@ -105,33 +134,32 @@ export function AISearchBar() {
 
   return (
     <div ref={containerRef} className="relative mx-auto w-full max-w-2xl">
-      <div
-        className={cn(
-          "flex items-center gap-3 rounded-2xl border border-border-strong bg-canvas px-5 py-4 shadow-popover",
-          "transition-shadow focus-within:border-accent focus-within:ring-4 focus-within:ring-accent/10"
-        )}
-      >
-        <Sparkles size={20} className="shrink-0 text-accent" aria-hidden />
-        <input
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
+      <div className={cn(COMPOSER_CONTAINER_CLASSNAME, "px-5")}>
+        <Sparkles size={20} className="mt-2.5 shrink-0 self-start text-accent" aria-hidden />
+        <textarea
+          defaultValue={query}
+          onChange={handleQueryChange}
           onKeyDown={(e) => {
-            if (e.key === "Enter") submitToConsult();
+            if (isComposerSubmitKey(e)) {
+              e.preventDefault();
+              submitToConsult();
+            }
           }}
           onFocus={() => setOpen(true)}
           placeholder={ROTATING_PROMPTS[placeholderIndex]}
           aria-label="Ask ForgeX AI"
-          className="flex-1 bg-transparent text-base text-ink outline-none placeholder:text-ink-faint"
+          rows={1}
+          className={COMPOSER_TEXTAREA_CLASSNAME}
         />
         {loading ? (
-          <Loader2 size={18} className="shrink-0 animate-spin text-ink-faint" aria-hidden />
+          <Loader2 size={18} className="mb-1.5 shrink-0 animate-spin text-ink-faint" aria-hidden />
         ) : (
           <button
             type="button"
             onClick={submitToConsult}
             disabled={query.trim().length < 2}
             aria-label="Search"
-            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-accent text-white transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-40"
+            className="mb-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-accent text-white transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-40"
           >
             <ArrowRight size={16} aria-hidden />
           </button>

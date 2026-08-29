@@ -47,6 +47,10 @@ describe("Consult initial ?q= handoff from the homepage search bar", () => {
   });
 
   beforeEach(() => {
+    // See consult-search-flow.test.tsx's beforeEach for why: sessionStorage
+    // persists across tests in this file, and P0 #1's auth_required save
+    // (app/consult/page.tsx) would otherwise leak into a later test.
+    sessionStorage.clear();
     authState.status = "authenticated";
     authState.accessToken = "token-abc";
     searchParamsState.q = null;
@@ -69,6 +73,37 @@ describe("Consult initial ?q= handoff from the homepage search bar", () => {
     // It went through real extraction, not a no-op — the next clarifying
     // question (country, since intent/product were both extractable)
     // should appear on its own, unprompted by any further user input.
+    await waitFor(() => expect(screen.getByText("Which country?")).toBeTruthy());
+  });
+
+  /**
+   * ForgeX Product Audit P1 #1: a homepage handoff used to render the
+   * generic greeting, the buyer's own message, and ForgeX's next
+   * question all in the very same instant — a "pre-written
+   * conversation" rather than a continuation of what the buyer just
+   * typed. The buyer already said what they need on the homepage, so
+   * the redundant greeting must never appear for a handoff, and the
+   * reply must visibly arrive a beat later, not simultaneously.
+   */
+  it("never shows the generic greeting on a ?q= handoff — the buyer already said what they need", async () => {
+    searchParamsState.q = "Need a room heater manufacturer";
+    render(<ConsultPage />);
+
+    await waitFor(() => expect(screen.getByText("Need a room heater manufacturer")).toBeTruthy());
+    expect(
+      screen.queryByText("Tell me what your business needs — I'll help you find the right company.")
+    ).toBeNull();
+  });
+
+  it("shows a brief thinking indicator before the real first reply, instead of dumping both at once", async () => {
+    searchParamsState.q = "Need a room heater manufacturer";
+    render(<ConsultPage />);
+
+    // The buyer's own message is preserved and shown immediately — no
+    // reason to delay an echo of what they just sent.
+    expect(screen.getByText("Need a room heater manufacturer")).toBeTruthy();
+    // The real reply is not there yet: it's still "thinking".
+    expect(screen.queryByText("Which country?")).toBeNull();
     await waitFor(() => expect(screen.getByText("Which country?")).toBeTruthy());
   });
 

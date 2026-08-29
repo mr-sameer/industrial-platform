@@ -4,13 +4,24 @@ import type { RequirementMatchCandidate } from "@platform/shared-types";
 import { Sparkles } from "lucide-react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { Suspense, useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
+import {
+  Suspense,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ChangeEvent,
+  type FormEvent,
+  type KeyboardEvent,
+} from "react";
 
 import { FollowUpChips } from "@/components/consult/FollowUpChips";
 import { RecommendationCard } from "@/components/consult/RecommendationCard";
 import { RequirementCard } from "@/components/consult/RequirementCard";
 import { ThinkingIndicator } from "@/components/consult/ThinkingIndicator";
 import { useAuth } from "@/contexts/AuthContext";
+import { cn } from "@/lib/cn";
+import { autoGrowTextarea, COMPOSER_CONTAINER_CLASSNAME, COMPOSER_TEXTAREA_CLASSNAME, isComposerSubmitKey } from "@/lib/composer";
 import { listCategories } from "@/lib/products";
 import {
   applyClarifyingAnswer,
@@ -51,6 +62,7 @@ import { createRequirement, getRequirementMatches } from "@/lib/requirements-api
 
 type Phase =
   | "greeting"
+  | "thinking"
   | "clarifying"
   | "summary"
   | "searching"
@@ -69,6 +81,14 @@ interface Message {
 }
 
 const QUESTION_CEILING = 4; // Phase 3A Section 3
+const GREETING_TEXT = "Tell me what your business needs — I'll help you find the right company.";
+// ForgeX Product Audit P1 #1: a brief, deliberate pause before ForgeX's
+// first reply to a homepage handoff — long enough to read as "thinking
+// about what you just said" (Phase 3A Section 13's own "no distinction
+// between loading data and generating a response — both are ForgeX
+// working"), short enough to never feel like a stall. Well under every
+// test file's default `waitFor` budget in this repo.
+const HANDOFF_THINKING_DELAY_MS = 450;
 
 function questionForField(field: ClarifyField): { text: string; chips?: string[] } {
   switch (field) {
@@ -87,6 +107,20 @@ let messageIdCounter = 0;
 function nextId(): string {
   messageIdCounter += 1;
   return `m${messageIdCounter}`;
+}
+
+// P0 #1 (Buyer UX Audit): a logged-out buyer can complete the whole
+// clarify -> summary flow and only discover login is required at
+// "Search now" (the auth boundary documented at the top of this file).
+// Without this, the redirect to /login and back unmounts ConsultForm
+// and every bit of state above is gone, forcing a retype. sessionStorage
+// (tab-scoped, cleared on read) survives that round trip without
+// persisting requirement text any longer than the login detour itself.
+const PENDING_SEARCH_KEY = "forgex:consult:pending-search";
+
+interface PendingSearch {
+  requirement: RequirementObject;
+  messages: Message[];
 }
 
 // useSearchParams() opts a page out of static rendering unless wrapped in
@@ -112,35 +146,91 @@ export default function ConsultPage() {
 function ConsultForm() {
   const auth = useAuth();
   const searchParams = useSearchParams();
-  const [messages, setMessages] = useState<Message[]>([
-    {
-      id: nextId(),
-      role: "assistant",
-      text: "Tell me what your business needs — I'll help you find the right company.",
-    },
-  ]);
-  const [phase, setPhase] = useState<Phase>("greeting");
+  // ForgeX Product Audit P1 #1: a buyer arriving with `?q=` already told
+  // ForgeX what they need on the homepage — showing the generic "Tell me
+  // what your business needs" greeting *after* echoing their own message
+  // back reads as if ForgeX didn't hear them, and showing all of it at
+  // once (greeting + their message + the next question) in the same
+  // instant is exactly the "pre-written conversation" feeling the audit
+  // flagged. So: with a handoff, the first thing ever rendered is their
+  // own message (preserved verbatim, already sent — no reason to delay
+  // it) and nothing else; the greeting only exists for a cold, no-`?q=`
+  // visit. The real first reply is added by the effect below, after a
+  // brief "thinking" pause.
+  const initialQueryRef = useRef(searchParams.get("q")?.trim() || null);
+  const [messages, setMessages] = useState<Message[]>(() =>
+    initialQueryRef.current
+      ? [{ id: nextId(), role: "user", text: initialQueryRef.current }]
+      : [{ id: nextId(), role: "assistant", text: GREETING_TEXT }]
+  );
+  const [phase, setPhase] = useState<Phase>(() => (initialQueryRef.current ? "thinking" : "greeting"));
   const [requirement, setRequirement] = useState<RequirementObject | null>(null);
   const [pendingField, setPendingField] = useState<ClarifyField | null>(null);
   const [questionsAsked, setQuestionsAsked] = useState(0);
   const [inputValue, setInputValue] = useState("");
   const [matches, setMatches] = useState<RequirementMatchCandidate[] | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
   const ranInitialQuery = useRef(false);
 
   useEffect(() => {
-    // Guarded the same way AuthContext's own bootstrap effect is
-    // (bootstrapped ref, see contexts/AuthContext.tsx) — React 18
-    // StrictMode double-invokes effects in development, and without
-    // this guard a `?q=` param would seed the opening message twice.
-    if (ranInitialQuery.current) return;
-    ranInitialQuery.current = true;
-    const initialQuery = searchParams.get("q")?.trim();
+    const initialQuery = initialQueryRef.current;
     if (!initialQuery) return;
-    addMessage({ role: "user", text: initialQuery });
-    handleFirstMessage(initialQuery);
+    // The guard lives *inside* the timer callback, not around the
+    // scheduling itself — React 18 StrictMode double-invokes effects in
+    // development (mount, cleanup, mount again on the same instance).
+    // Guarding the scheduling would let StrictMode's synchronous
+    // cleanup (clearTimeout) cancel the first timer and then the guard
+    // block the second mount from ever scheduling a replacement,
+    // leaving the "thinking" indicator spinning forever. Guarding the
+    // callback instead lets both timers be scheduled (harmless — the
+    // first is always cancelled by the real cleanup below) while still
+    // guaranteeing handleFirstMessage runs exactly once.
+    const timer = setTimeout(() => {
+      if (ranInitialQuery.current) return;
+      ranInitialQuery.current = true;
+      handleFirstMessage(initialQuery);
+    }, HANDOFF_THINKING_DELAY_MS);
+    return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- runs once on mount only, by design (see the ref guard above)
   }, []);
+
+  const restoredPendingSearch = useRef(false);
+
+  useEffect(() => {
+    // Mirrors the `?q=` effect's ref-guard reasoning above. Only fires
+    // once auth.status resolves to "authenticated" — i.e. right after the
+    // buyer returns from the /login detour this same conversation
+    // triggered (see handleSearch's auth_required branch) — so a plain
+    // unauthenticated visit never touches this, and it never fires twice
+    // under StrictMode's double-invoke.
+    if (restoredPendingSearch.current) return;
+    if (auth.status !== "authenticated") return;
+    restoredPendingSearch.current = true;
+
+    let raw: string | null = null;
+    try {
+      raw = sessionStorage.getItem(PENDING_SEARCH_KEY);
+      if (raw) sessionStorage.removeItem(PENDING_SEARCH_KEY);
+    } catch {
+      raw = null;
+    }
+    if (!raw) return;
+
+    try {
+      const pending = JSON.parse(raw) as PendingSearch;
+      // Fresh ids so they can't collide with nextId()'s own counter,
+      // which restarts at 0 on this new page load.
+      setMessages(pending.messages.map((m) => ({ ...m, id: nextId() })));
+      setRequirement(pending.requirement);
+      setPhase("summary");
+      scrollToBottom();
+    } catch {
+      // Corrupt/unexpected stored value — ignore, buyer just sees the
+      // ordinary empty greeting instead of a crash.
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- ref-guarded, same reasoning as the ?q= effect above
+  }, [auth.status]);
 
   function scrollToBottom() {
     setTimeout(() => bottomRef.current?.scrollIntoView({ behavior: "smooth" }), 50);
@@ -199,6 +289,13 @@ function ConsultForm() {
     if (!requirement) return;
 
     if (auth.status !== "authenticated" || !auth.accessToken) {
+      try {
+        const pending: PendingSearch = { requirement, messages };
+        sessionStorage.setItem(PENDING_SEARCH_KEY, JSON.stringify(pending));
+      } catch {
+        // Storage unavailable (private browsing, quota) — the buyer falls
+        // back to retyping after login, same as before this fix.
+      }
       setPhase("auth_required");
       return;
     }
@@ -258,13 +355,7 @@ function ConsultForm() {
   }
 
   function handleStartOver() {
-    setMessages([
-      {
-        id: nextId(),
-        role: "assistant",
-        text: "Tell me what your business needs — I'll help you find the right company.",
-      },
-    ]);
+    setMessages([{ id: nextId(), role: "assistant", text: GREETING_TEXT }]);
     setPhase("greeting");
     setRequirement(null);
     setPendingField(null);
@@ -272,14 +363,25 @@ function ConsultForm() {
     setMatches(null);
   }
 
-  function handleKeyDown(e: KeyboardEvent<HTMLInputElement>) {
-    if (e.key === "Enter") {
+  function handleComposerKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
+    if (isComposerSubmitKey(e)) {
       e.preventDefault();
       handleSubmit(e as unknown as FormEvent);
     }
   }
 
-  const showInput = phase === "greeting" || phase === "clarifying";
+  // "thinking"/"searching" keep the composer visible-but-disabled rather
+  // than removing it — Phase 3A Section 13's own interaction-states table
+  // treats "loading" and "generating a response" identically ("both are
+  // ForgeX working"), and a composer that vanishes and reappears between
+  // every turn is exactly the kind of layout jump this P1 is fixing.
+  const showInput =
+    phase === "greeting" || phase === "clarifying" || phase === "thinking" || phase === "searching";
+  const inputDisabled = phase === "thinking" || phase === "searching";
+
+  useLayoutEffect(() => {
+    if (inputRef.current) autoGrowTextarea(inputRef.current);
+  }, [inputValue]);
 
   return (
     <div className="flex min-h-screen flex-col bg-canvas">
@@ -297,19 +399,19 @@ function ConsultForm() {
       <main className="flex-1 px-4 py-8 sm:px-6">
         <div className="mx-auto flex max-w-2xl flex-col gap-4">
           {messages.map((msg) => (
-            <div key={msg.id}>
+            <div key={msg.id} className="animate-slide-up">
               {msg.role === "assistant" ? (
                 <div className="flex items-start gap-2.5">
                   <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-accent-subtle text-accent">
                     <Sparkles size={13} aria-hidden />
                   </div>
                   <div className="max-w-md rounded-2xl rounded-tl-sm border border-border bg-surface px-4 py-2.5">
-                    <p className="text-sm text-ink">{msg.text}</p>
+                    <p className="whitespace-pre-wrap text-sm text-ink">{msg.text}</p>
                   </div>
                 </div>
               ) : (
                 <div className="flex justify-end">
-                  <p className="max-w-xs rounded-2xl rounded-br-sm bg-accent px-4 py-2.5 text-sm text-white">
+                  <p className="max-w-md whitespace-pre-wrap rounded-2xl rounded-br-sm bg-accent px-4 py-2.5 text-sm text-white">
                     {msg.text}
                   </p>
                 </div>
@@ -322,7 +424,11 @@ function ConsultForm() {
             </div>
           ))}
 
-          {phase === "searching" && <ThinkingIndicator />}
+          {(phase === "searching" || phase === "thinking") && (
+            <div className="animate-fade-in">
+              <ThinkingIndicator />
+            </div>
+          )}
 
           {phase === "summary" && requirement && (
             <div className="ml-9 flex flex-col gap-3">
@@ -384,19 +490,22 @@ function ConsultForm() {
 
       {showInput && (
         <form onSubmit={handleSubmit} className="sticky bottom-0 border-t border-border bg-canvas px-4 py-4 sm:px-6">
-          <div className="mx-auto flex max-w-2xl items-center gap-3 rounded-2xl border border-border-strong bg-canvas px-4 py-3 shadow-popover focus-within:border-accent focus-within:ring-4 focus-within:ring-accent/10">
-            <input
+          <div className={cn(COMPOSER_CONTAINER_CLASSNAME, "mx-auto max-w-2xl")}>
+            <textarea
+              ref={inputRef}
               value={inputValue}
-              onChange={(e) => setInputValue(e.target.value)}
-              onKeyDown={handleKeyDown}
+              onChange={(e: ChangeEvent<HTMLTextAreaElement>) => setInputValue(e.target.value)}
+              onKeyDown={handleComposerKeyDown}
               placeholder={phase === "greeting" ? "e.g. Need CNC machining in India" : "Type your answer…"}
               aria-label="Your message"
-              className="flex-1 bg-transparent text-sm text-ink outline-none placeholder:text-ink-faint"
+              rows={1}
+              disabled={inputDisabled}
+              className={COMPOSER_TEXTAREA_CLASSNAME}
             />
             <button
               type="submit"
-              disabled={inputValue.trim().length === 0}
-              className="rounded-full bg-accent px-4 py-1.5 text-sm font-medium text-white transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-40"
+              disabled={inputValue.trim().length === 0 || inputDisabled}
+              className="mb-0.5 shrink-0 rounded-full bg-accent px-4 py-1.5 text-sm font-medium text-white transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-40"
             >
               Send
             </button>

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { AISearchBar } from "@/components/home/AISearchBar";
@@ -24,6 +24,19 @@ vi.mock("next/navigation", () => ({
 vi.mock("@/lib/companies", () => ({
   searchCompanies: vi.fn(),
 }));
+
+// The search bar coalesces its own state update to the next animation
+// frame (see AISearchBar.tsx's handleQueryChange) so a burst of scripted
+// keystrokes can't trip React's "Maximum update depth exceeded" — a real
+// browser paints between `fireEvent.change` and that frame, but jsdom
+// doesn't, so a test that depends on the resulting state (here: the
+// loading spinner settling back to the Search button) must explicitly
+// flush one frame itself.
+async function flushAnimationFrame() {
+  await act(async () => {
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+  });
+}
 
 const emptyCompanyPage = {
   success: true as const,
@@ -55,6 +68,7 @@ describe("AISearchBar", () => {
 
     const input = screen.getByLabelText("Ask ForgeX AI");
     fireEvent.change(input, { target: { value: "Find a CNC manufacturer in Germany" } });
+    await flushAnimationFrame();
     // The debounced live-search effect briefly swaps the Search button
     // for a loading spinner (same element the button occupies) — wait
     // for it to settle back to the real button before clicking it.
@@ -69,6 +83,20 @@ describe("AISearchBar", () => {
     const input = screen.getByLabelText("Ask ForgeX AI");
     fireEvent.change(input, { target: { value: "a" } });
     fireEvent.keyDown(input, { key: "Enter" });
+    expect(pushMock).not.toHaveBeenCalled();
+  });
+
+  /**
+   * ForgeX Product Audit P1 #1: the composer is now a growing textarea,
+   * not a single-line input — Shift+Enter must insert a real newline for
+   * a long, natural multi-line procurement requirement instead of
+   * submitting early.
+   */
+  it("does not submit on Shift+Enter — that inserts a newline instead", () => {
+    render(<AISearchBar />);
+    const input = screen.getByLabelText("Ask ForgeX AI");
+    fireEvent.change(input, { target: { value: "Need 5,000 hydraulic cylinders" } });
+    fireEvent.keyDown(input, { key: "Enter", shiftKey: true });
     expect(pushMock).not.toHaveBeenCalled();
   });
 
