@@ -1,6 +1,7 @@
 "use client";
 
 import type { CompanyCreateRequest, CompanySize } from "@platform/shared-types";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState, type FormEvent } from "react";
 
@@ -37,6 +38,30 @@ export default function CreateCompanyPage() {
 
   if (auth.status === "loading") return <main style={ui.page}>Loading…</main>;
   if (auth.status === "unauthenticated") return null;
+
+  // ForgeX Product Audit P1: this requirement was previously only
+  // enforced server-side (see this file's own top-of-file comment),
+  // which meant a buyer only learned about it as a small line below
+  // the fold after filling out the entire form and submitting. Since
+  // `is_email_verified` is already on the session user (no extra
+  // request needed), surface the same requirement up front instead.
+  if (auth.user && !auth.user.is_email_verified) {
+    return (
+      <main style={ui.page}>
+        <h1>Create a company</h1>
+        <div style={{ ...ui.card, maxWidth: 520, marginTop: "1rem" }}>
+          <p style={{ marginTop: 0 }}>Please verify your email address before continuing.</p>
+          <p style={ui.mutedText}>
+            Creating a company requires a verified email — check <strong>{auth.user.email}</strong> for the
+            verification link we sent when you registered.
+          </p>
+          <Link href="/dashboard" style={{ ...ui.buttonSecondary, display: "inline-block", marginTop: "0.75rem", textDecoration: "none" }}>
+            Back to Dashboard
+          </Link>
+        </div>
+      </main>
+    );
+  }
 
   function set<K extends keyof CompanyCreateRequest>(key: K, value: CompanyCreateRequest[K]) {
     setForm((prev) => ({ ...prev, [key]: value }));
