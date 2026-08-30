@@ -288,7 +288,16 @@ function ConsultForm() {
   async function handleSearch() {
     if (!requirement) return;
 
-    if (auth.status !== "authenticated" || !auth.accessToken) {
+    // ForgeX Product Audit P0: auth.status/auth.accessToken here are this
+    // render's closure — if the AuthContext bootstrap (POST
+    // /api/auth/refresh, fired on every fresh mount) hadn't settled yet
+    // when the buyer answered the last clarifying question, this used to
+    // read a stale "loading"/null and send a genuinely logged-in buyer
+    // into the "please log in" branch right after they'd just answered
+    // every question. resolveAuth() waits for the real, settled outcome
+    // instead of trusting this closure.
+    const resolved = await auth.resolveAuth();
+    if (resolved.status !== "authenticated" || !resolved.accessToken) {
       try {
         const pending: PendingSearch = { requirement, messages };
         sessionStorage.setItem(PENDING_SEARCH_KEY, JSON.stringify(pending));
@@ -299,6 +308,7 @@ function ConsultForm() {
       setPhase("auth_required");
       return;
     }
+    const accessToken = resolved.accessToken;
 
     setPhase("searching");
     addMessage({ role: "assistant", text: "Searching…" });
@@ -326,7 +336,7 @@ function ConsultForm() {
           extraction_confidence: requirement.overallConfidence / 100,
           criteria: [],
         },
-        auth.accessToken
+        accessToken
       );
       if (!created.success) {
         setPhase("error");
@@ -334,7 +344,7 @@ function ConsultForm() {
         return;
       }
 
-      const matchesResult = await getRequirementMatches(created.data.id, auth.accessToken);
+      const matchesResult = await getRequirementMatches(created.data.id, accessToken);
       if (!matchesResult.success) {
         setPhase("error");
         addMessage({ role: "assistant", text: "Something went wrong on my end — let's try that again." });

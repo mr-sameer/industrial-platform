@@ -12,6 +12,11 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 
 import { logger } from "@/lib/logger";
 
+export interface ResolvedAuth {
+  status: "authenticated" | "unauthenticated";
+  accessToken: string | null;
+}
+
 export interface AuthContextValue {
   user: UserPublic | null;
   accessToken: string | null;
@@ -20,6 +25,19 @@ export interface AuthContextValue {
   register: (payload: RegisterRequest) => Promise<{ ok: true } | { ok: false; message: string }>;
   logout: () => Promise<void>;
   logoutAll: () => Promise<void>;
+  /**
+   * ForgeX Product Audit P0: `status` starts "loading" on every mount and
+   * only resolves once the bootstrap effect's POST /api/auth/refresh
+   * settles — a caller that reads `status`/`accessToken` synchronously
+   * (e.g. Consult's "Search now" handler) can catch that window and
+   * wrongly treat a genuinely-logged-in buyer as unauthenticated if they
+   * act before it resolves. This waits for the *real* outcome — via refs
+   * updated the instant applySession/clearSession run, not via this
+   * render's closure, which would still read stale "loading"/null even
+   * after an await — and resolves immediately if bootstrap already
+   * settled, so it costs nothing in the normal case.
+   */
+  resolveAuth: () => Promise<ResolvedAuth>;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -49,19 +67,32 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [accessToken, setAccessToken] = useState<string | null>(null);
   const [status, setStatus] = useState<AuthContextValue["status"]>("loading");
 
+  // Mirrors `status`/`accessToken`, but updated synchronously in the same
+  // call as the setState above — resolveAuth() below reads these instead
+  // of the state variables so it never returns a value that's stale by
+  // one render (state updates don't apply until the next render; these do
+  // immediately, which is what a promise resolving mid-bootstrap needs).
+  const statusRef = useRef<AuthContextValue["status"]>("loading");
+  const accessTokenRef = useRef<string | null>(null);
+
   const applySession = useCallback((session: ClientSession) => {
     setUser(session.user);
     setAccessToken(session.access_token);
     setStatus("authenticated");
+    statusRef.current = "authenticated";
+    accessTokenRef.current = session.access_token;
   }, []);
 
   const clearSession = useCallback(() => {
     setUser(null);
     setAccessToken(null);
     setStatus("unauthenticated");
+    statusRef.current = "unauthenticated";
+    accessTokenRef.current = null;
   }, []);
 
   const bootstrapped = useRef(false);
+  const bootstrapPromise = useRef<Promise<void> | null>(null);
 
   useEffect(() => {
     // Bootstrap: try to silently re-establish a session from the refresh cookie.
@@ -84,7 +115,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // path uses.
     if (bootstrapped.current) return;
     bootstrapped.current = true;
-    postJson<ClientSession>("/api/auth/refresh")
+    bootstrapPromise.current = postJson<ClientSession>("/api/auth/refresh")
       .then((result) => {
         if (result.success) {
           applySession(result.data);
@@ -159,9 +190,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     clearSession();
   }, [accessToken, clearSession]);
 
+  const resolveAuth = useCallback(async (): Promise<ResolvedAuth> => {
+    if (bootstrapPromise.current) {
+      await bootstrapPromise.current;
+    }
+    // statusRef/accessTokenRef were just updated (or already were, if
+    // bootstrap had already settled) synchronously inside applySession/
+    // clearSession above — never "loading" by this point.
+    return {
+      status: statusRef.current === "authenticated" ? "authenticated" : "unauthenticated",
+      accessToken: accessTokenRef.current,
+    };
+  }, []);
+
   const value = useMemo(
-    () => ({ user, accessToken, status, login, register, logout, logoutAll }),
-    [user, accessToken, status, login, register, logout, logoutAll]
+    () => ({ user, accessToken, status, login, register, logout, logoutAll, resolveAuth }),
+    [user, accessToken, status, login, register, logout, logoutAll, resolveAuth]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

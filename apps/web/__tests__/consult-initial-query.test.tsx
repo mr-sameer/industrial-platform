@@ -18,6 +18,14 @@ import { createRequirement, getRequirementMatches } from "@/lib/requirements-api
 const authState = vi.hoisted(() => ({
   status: "authenticated" as "authenticated" | "unauthenticated" | "loading",
   accessToken: "token-abc" as string | null,
+  async resolveAuth() {
+    return {
+      status: (this.status === "authenticated" ? "authenticated" : "unauthenticated") as
+        | "authenticated"
+        | "unauthenticated",
+      accessToken: this.accessToken,
+    };
+  },
 }));
 
 vi.mock("@/contexts/AuthContext", () => ({

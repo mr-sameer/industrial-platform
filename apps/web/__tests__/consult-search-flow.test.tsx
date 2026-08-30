@@ -19,6 +19,19 @@ import { createRequirement, getRequirementMatches } from "@/lib/requirements-api
 const authState = vi.hoisted(() => ({
   status: "authenticated" as "authenticated" | "unauthenticated" | "loading",
   accessToken: "token-abc" as string | null,
+  // Real AuthContext.resolveAuth() waits for the bootstrap race, then
+  // returns whatever the (by then settled) status/accessToken actually
+  // are — this mock has no bootstrap to wait for, so it just reflects
+  // this object's current values at call time, same as the real thing
+  // does once resolved.
+  async resolveAuth() {
+    return {
+      status: (this.status === "authenticated" ? "authenticated" : "unauthenticated") as
+        | "authenticated"
+        | "unauthenticated",
+      accessToken: this.accessToken,
+    };
+  },
 }));
 
 vi.mock("@/contexts/AuthContext", () => ({

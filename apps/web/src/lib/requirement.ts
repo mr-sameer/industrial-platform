@@ -168,6 +168,24 @@ const CURRENCY_PATTERN = "(?:USD|INR|EUR|GBP|Rs\\.?|₹|\\$|€)";
 // docstring above warns against.
 const QUANTITY_UNIT_PATTERN = new RegExp(`\\b(${NUMBER_WORD_PATTERN})\\s+(?:units?|pieces?|pcs?)\\b`, "i");
 const QUANTITY_LABEL_PATTERN = new RegExp(`\\b(?:quantity|qty)\\s*(?:of|is|:)?\\s*(${NUMBER_WORD_PATTERN})\\b`, "i");
+// ForgeX Product Audit P0: covers a number sitting right after the verb
+// that actually names the sourcing action ("who can produce 5,000 X",
+// "can manufacture 500 X") rather than right after the sentence's own
+// opening phrase — a real buyer sentence with a relative clause between
+// the opening and the number ("I need a manufacturer near Delhi who can
+// produce 5,000 X") previously matched neither of the two patterns
+// above, so the quantity fell through to Unknown *and* the "5,000" was
+// never stripped out of productOrCategory's remainder either, since
+// that strip is itself gated on a quantity having been found.
+// Deliberately a short, specific verb list (same "adjacent, never a
+// bare number" discipline as every other pattern in this file) — not a
+// general "any verb near a number" rule, which would risk the same
+// false-positive a bare-number rule elsewhere in this file already
+// guards against.
+const QUANTITY_VERB_PATTERN = new RegExp(
+  `\\b(?:produce|manufacture|supply|deliver|provide|make)\\s+(${NUMBER_WORD_PATTERN})\\b`,
+  "i"
+);
 
 // "months"/"years" added alongside the original days/weeks/hours — a
 // real buyer's timeline is at least as likely to be stated in months as
@@ -190,7 +208,9 @@ const BUDGET_PATTERN = new RegExp(
 );
 
 function matchQuantity(text: string): RegExpMatchArray | null {
-  return text.match(QUANTITY_UNIT_PATTERN) ?? text.match(QUANTITY_LABEL_PATTERN);
+  return (
+    text.match(QUANTITY_UNIT_PATTERN) ?? text.match(QUANTITY_LABEL_PATTERN) ?? text.match(QUANTITY_VERB_PATTERN)
+  );
 }
 
 /**
@@ -288,6 +308,12 @@ export function extractFromText(
 ): RequirementObject {
   const next: RequirementObject = structuredClone(existing);
   const lower = text.toLowerCase();
+  // Set alongside next.quantity below, holding the exact substring that
+  // matched (e.g. "5,000", not the normalized "5000"; or "five", not the
+  // normalized "5") — the productOrCategory remainder-stripping logic
+  // further down needs the literal text that's actually still sitting in
+  // the sentence, not the normalized value, to find and remove it.
+  let quantityRawToken: string | null = null;
 
   if (next.intent.confidence === "missing") {
     for (const [type, keywords] of Object.entries(ROLE_KEYWORDS) as [IntentType, string[]][]) {
@@ -326,6 +352,7 @@ export function extractFromText(
       // QUANTITY_UNIT_PATTERN and QUANTITY_LABEL_PATTERN, so a truthy
       // overall match guarantees it matched too — TS just can't derive
       // that from the regex source itself.
+      quantityRawToken = quantityMatch[1]!;
       next.quantity = { value: numberTokenToDigits(quantityMatch[1]!), confidence: "explicit" };
     }
   }
@@ -384,9 +411,19 @@ export function extractFromText(
       }
     }
     if (next.country.value) {
+      // Strip a leading preposition together with the country/city itself
+      // ("near Delhi", "in India") as one unit where present — otherwise
+      // the preposition is left dangling mid-sentence once its object is
+      // gone (only the *trailing* case was handled below; "near Delhi who
+      // can…" doesn't end the sentence, so that check never caught it).
+      // The plain bare-name strip right after is a no-op once the
+      // preposition+name form already matched, and still catches the
+      // (less common) case where no preposition preceded the name at all.
+      remainder = remainder.replace(new RegExp(`\\b(?:in|near|at)\\s+${next.country.value}\\b`, "gi"), "").trim();
       remainder = remainder.replace(new RegExp(`\\b${next.country.value}\\b`, "gi"), "").trim();
     }
     if (next.city.value) {
+      remainder = remainder.replace(new RegExp(`\\b(?:in|near|at)\\s+${next.city.value}\\b`, "gi"), "").trim();
       remainder = remainder.replace(new RegExp(`\\b${next.city.value}\\b`, "gi"), "").trim();
     }
     if (next.quantity.value) {
@@ -394,6 +431,14 @@ export function extractFromText(
         .replace(new RegExp(QUANTITY_UNIT_PATTERN, "gi"), "")
         .replace(new RegExp(QUANTITY_LABEL_PATTERN, "gi"), "")
         .trim();
+      if (quantityRawToken) {
+        // The verb half of QUANTITY_VERB_PATTERN ("produce", "manufacture"…)
+        // is also a ROLE_KEYWORDS entry, already stripped above — leaving
+        // just the bare number sitting mid-sentence ("who can  5,000
+        // stainless-steel…"). Neither pattern above matches that shape, so
+        // strip the literal matched token directly.
+        remainder = remainder.replace(new RegExp(`\\b${quantityRawToken}\\b`, "i"), "").trim();
+      }
     }
     if (next.timeline.value) {
       remainder = remainder.replace(new RegExp(TIMELINE_PATTERN, "gi"), "").trim();
@@ -407,19 +452,38 @@ export function extractFromText(
       // the extraction block earlier in this function is a label, not
       // part of the product/category description.
       for (const key of Object.keys(KNOWN_CERTIFICATIONS)) {
-        remainder = remainder.replace(new RegExp(`\\b${key}\\b`, "gi"), "").trim();
+        // Strips "ISO-certified"/"ISO certified" as one unit, not just
+        // the bare "ISO" — otherwise a hyphenated compound like
+        // "ISO-certified" leaves an orphaned "-certified" fragment (the
+        // hyphen itself already counts as a word boundary, so `\bISO\b`
+        // alone matches and removes only the letters, not the suffix
+        // riding along with it). Still matches plain "ISO" with no
+        // suffix exactly as before.
+        remainder = remainder
+          .replace(new RegExp(`\\b${key}(?:[- ]?(?:certified|approved|compliant))?\\b`, "gi"), "")
+          .trim();
       }
     }
     // Strip connective clauses and bare field labels left dangling once
     // the fields above are removed ("preferably in", "delivered
     // within", "and I need it quickly", the standalone word "timeline"
-    // once its "2 months" has already been stripped) — same "simple
-    // text-stripping, not sentence understanding" principle as the rest
-    // of this function; never affects which fields were actually
-    // extracted, only how the leftover product/category text reads.
+    // once its "2 months" has already been stripped, a relative clause
+    // like "who can"/"that can" once the verb it led into is gone) —
+    // same "simple text-stripping, not sentence understanding"
+    // principle as the rest of this function; never affects which
+    // fields were actually extracted, only how the leftover
+    // product/category text reads.
     remainder = remainder
-      .replace(/\b(preferably|delivered|and i need it \w+|quantity|qty|budget|timeline)\b/gi, "")
+      .replace(
+        /\b(preferably|delivered|and i need it \w+|quantity|qty|budget|timeline|who can|that can|which can)\b/gi,
+        ""
+      )
       .trim();
+    // A leading article ("a manufacturer" -> "a" once "manufacturer" is
+    // stripped above) reads as noise in front of a product/category
+    // description — only stripped at the very start, never mid-sentence,
+    // so a genuine product name is never touched.
+    remainder = remainder.replace(/^(?:a|an|the)\s+/i, "").trim();
     // Collapse any run of two-or-more commas (left behind wherever a
     // field sat between two other stripped fields, e.g. "heater , ,
     // budget...") down to one — the original single-pair version of
@@ -434,6 +498,12 @@ export function extractFromText(
     remainder = remainder.replace(/\s+(in|for|from|at|near)\s*$/i, "").trim();
     remainder = remainder.replace(/^[,\s]+|[,\s]+$/g, "").trim();
     remainder = remainder.replace(/[.,!?]+$/, "").trim();
+    // Every strip above leaves a gap rather than closing it up (e.g. "a
+    // manufacturer" -> "a  " once "manufacturer" alone is removed) —
+    // collapse any run of internal whitespace left behind by the whole
+    // pipeline into a single space, as a final pass rather than after
+    // every individual strip.
+    remainder = remainder.replace(/\s{2,}/g, " ").trim();
     if (remainder.length >= 2) {
       next.productOrCategory = { value: remainder, confidence: "explicit" };
     }
