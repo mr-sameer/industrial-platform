@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 
+import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
@@ -149,16 +150,36 @@ export default function BusinessInfoPage() {
           </label>
 
           {/* IBM Plex Mono for GSTIN/PAN/CIN/MSME/IEC values, per docs/architecture/design-system.md. */}
+          <div>
+            <h2 className="text-sm font-semibold text-ink">Registration identifiers</h2>
+            {/* Mirrors the real verification weighting (verification_rules.py's
+                government_id_set requirement): GSTIN/PAN/CIN satisfy the same
+                one-of-three check toward Business Verified, while MSME and IEC
+                carry no verification weight at all — not equally important,
+                whatever the plain-field layout below implies on its own. */}
+            <p className="mt-1 text-xs text-ink-muted">
+              At least one government ID — GSTIN, PAN, or CIN — is required to reach Business
+              Verified. MSME and IEC numbers are optional and used for export/trade context.
+            </p>
+          </div>
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <Input
-              label="GSTIN"
+              label={
+                <span className="inline-flex items-center gap-1.5">
+                  GSTIN <Badge variant="accent">One required</Badge>
+                </span>
+              }
               id="gst_number"
               className="font-mono"
               value={form.gst_number ?? ""}
               onChange={(e) => setForm((f) => ({ ...f, gst_number: e.target.value }))}
             />
             <Input
-              label="PAN"
+              label={
+                <span className="inline-flex items-center gap-1.5">
+                  PAN <Badge variant="accent">One required</Badge>
+                </span>
+              }
               id="pan"
               className="font-mono"
               value={form.pan ?? ""}
@@ -168,14 +189,22 @@ export default function BusinessInfoPage() {
 
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <Input
-              label="CIN"
+              label={
+                <span className="inline-flex items-center gap-1.5">
+                  CIN <Badge variant="accent">One required</Badge>
+                </span>
+              }
               id="cin"
               className="font-mono"
               value={form.cin ?? ""}
               onChange={(e) => setForm((f) => ({ ...f, cin: e.target.value }))}
             />
             <Input
-              label="MSME number"
+              label={
+                <span className="inline-flex items-center gap-1.5">
+                  MSME number <Badge variant="neutral">Optional</Badge>
+                </span>
+              }
               id="msme_number"
               className="font-mono"
               value={form.msme_number ?? ""}
@@ -185,7 +214,11 @@ export default function BusinessInfoPage() {
 
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <Input
-              label="IEC number"
+              label={
+                <span className="inline-flex items-center gap-1.5">
+                  IEC number <Badge variant="neutral">Optional</Badge>
+                </span>
+              }
               id="iec_number"
               className="font-mono"
               value={form.iec_number ?? ""}
