@@ -54,6 +54,12 @@ describe("RecommendationCard", () => {
     expect(screen.getByText("78% match")).toBeTruthy();
   });
 
+  it("P1 #9 (ForgeX Product Audit): rounds a decimal match score to a whole-number percentage, a display choice only — the underlying score value is untouched", () => {
+    render(<RecommendationCard match={buildMatch({ score: 34.38 })} />);
+    expect(screen.getByText("34% match")).toBeTruthy();
+    expect(screen.queryByText("34.38% match")).toBeNull();
+  });
+
   it("renders the score breakdown points earned vs. possible for every signal", () => {
     render(<RecommendationCard match={buildMatch()} />);
     expect(screen.getByText("25/50 pts")).toBeTruthy();

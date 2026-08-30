@@ -160,7 +160,7 @@ export function RecommendationCard({ match }: { match: RequirementMatchCandidate
             <div className="flex flex-wrap items-center gap-2">
               <h3 className="font-medium text-ink">{company.name}</h3>
               <span className="rounded-full bg-accent-subtle px-2 py-0.5 text-[10px] font-medium text-accent">
-                {score}% match
+                {Math.round(score)}% match
               </span>
               {/* Role is a claim from the seller-published profile, not
                   something ForgeX has independently checked (Offering.
