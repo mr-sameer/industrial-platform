@@ -6,6 +6,7 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useEffect, useState } from "react";
 
+import { Badge } from "@/components/ui/Badge";
 import { useRequireAuth } from "@/hooks/useRequireAuth";
 import { getOffering } from "@/lib/products";
 
@@ -32,6 +33,9 @@ function Row({ label, value }: { label: string; value: string | null }) {
  * offering-level verification status — never the Product's own data
  * (see app.models.offering's docstring: this is deliberately the only
  * place these fields live).
+ *
+ * ForgeX Product Audit P1 #5: carries the same "Internal" badge as the
+ * two pages above it, so the honest signal survives the full drill-down.
  */
 export default function OfferingDetailPage() {
   const auth = useRequireAuth("/products");
@@ -63,7 +67,10 @@ export default function OfferingDetailPage() {
           <Building2 size={26} aria-hidden />
         </div>
         <div>
-          <h1 className="font-display text-xl font-semibold text-ink">{offering.company.name}</h1>
+          <div className="flex items-center gap-2">
+            <h1 className="font-display text-xl font-semibold text-ink">{offering.company.name}</h1>
+            <Badge variant="warning">Internal</Badge>
+          </div>
           <p className="mt-1 text-sm text-ink-muted">
             {ROLE_LABELS[offering.role]} of {offering.product.name}
           </p>

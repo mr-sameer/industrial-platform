@@ -6,6 +6,7 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useEffect, useState } from "react";
 
+import { Badge } from "@/components/ui/Badge";
 import { useRequireAuth } from "@/hooks/useRequireAuth";
 import { getProduct, getProductOfferings } from "@/lib/products";
 
@@ -15,6 +16,10 @@ import { getProduct, getProductOfferings } from "@/lib/products";
  * every real Offering against it — the direct, visible proof of this
  * module's ABSOLUTE RULE: one Product, displayed once, with N real
  * companies listed below it, never duplicated.
+ *
+ * ForgeX Product Audit P1 #5: carries the same "Internal" badge as the
+ * list page one level up, so a visitor who drills into a product still
+ * sees the honest signal rather than losing it after one click.
  */
 export default function ProductDetailPage() {
   const auth = useRequireAuth("/products");
@@ -50,7 +55,10 @@ export default function ProductDetailPage() {
           <Package size={26} aria-hidden />
         </div>
         <div>
-          <h1 className="font-display text-2xl font-semibold text-ink">{product.name}</h1>
+          <div className="flex items-center gap-2">
+            <h1 className="font-display text-2xl font-semibold text-ink">{product.name}</h1>
+            <Badge variant="warning">Internal</Badge>
+          </div>
           <p className="mt-1 text-sm text-ink-muted">
             {product.category.name}
             {product.industry ? ` · ${product.industry}` : ""}
