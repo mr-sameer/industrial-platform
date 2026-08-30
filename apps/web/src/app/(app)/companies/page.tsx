@@ -4,10 +4,10 @@ import type { CompanyPublic } from "@platform/shared-types";
 import Link from "next/link";
 import { useEffect, useState } from "react";
 
-
+import { Badge } from "@/components/ui/Badge";
+import { Button } from "@/components/ui/Button";
 import { useRequireAuth } from "@/hooks/useRequireAuth";
 import { listMyCompanies } from "@/lib/companies";
-import * as ui from "@/lib/ui-styles";
 
 /** "Company List" — Module 3A. The dashboard entry point: every company the current user belongs to. */
 export default function CompanyListPage() {
@@ -26,48 +26,48 @@ export default function CompanyListPage() {
     });
   }, [auth.status, auth.accessToken]);
 
-  if (auth.status === "loading") return <main style={ui.page}>Loading…</main>;
+  if (auth.status === "loading") return <main className="p-8 text-sm text-ink-muted">Loading…</main>;
   if (auth.status === "unauthenticated") return null;
 
   return (
-    <main style={ui.page}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.5rem" }}>
-        <h1>Your companies</h1>
-        <Link href="/companies/new" style={ui.button}>
-          + New company
-        </Link>
+    <main className="mx-auto max-w-4xl px-4 py-8 sm:px-6">
+      <div className="mb-6 flex items-center justify-between">
+        <h1 className="font-display text-xl font-semibold text-ink">Your companies</h1>
+        <Button asChild>
+          <Link href="/companies/new">+ New company</Link>
+        </Button>
       </div>
 
-      {error && <p style={ui.errorText}>{error}</p>}
+      {error && <p className="text-sm text-danger">{error}</p>}
 
-      {companies === null && !error && <p style={ui.mutedText}>Loading your companies…</p>}
+      {companies === null && !error && <p className="text-sm text-ink-muted">Loading your companies…</p>}
 
       {companies !== null && companies.length === 0 && (
-        <div style={{ ...ui.card, textAlign: "center", padding: "3rem" }}>
-          <p>You&apos;re not part of any company yet.</p>
-          <Link href="/companies/new" style={ui.button}>
-            Create your first company
-          </Link>
+        <div className="flex flex-col items-center gap-3 rounded-lg border border-border bg-canvas p-12 text-center">
+          <p className="text-sm text-ink-muted">You&apos;re not part of any company yet.</p>
+          <Button asChild>
+            <Link href="/companies/new">Create your first company</Link>
+          </Button>
         </div>
       )}
 
       {companies !== null && companies.length > 0 && (
-        <div style={ui.cardGrid}>
+        <div className="grid grid-cols-[repeat(auto-fill,minmax(260px,1fr))] gap-4">
           {companies.map((c) => (
             <Link
               key={c.id}
               href={`/companies/${c.id}`}
-              style={{ ...ui.card, textDecoration: "none", color: "inherit" }}
+              className="rounded-lg border border-border bg-canvas p-5 transition-colors hover:bg-surface"
             >
-              <h3 style={{ margin: "0 0 0.35rem" }}>{c.name}</h3>
-              <p style={ui.mutedText}>
+              <h3 className="text-sm font-semibold text-ink">{c.name}</h3>
+              <p className="mt-1 text-sm text-ink-muted">
                 {c.industry ?? "Industry not set"}
                 {c.city ? ` · ${c.city}` : ""}
                 {c.country ? `, ${c.country}` : ""}
               </p>
-              <span style={{ ...ui.badge, background: "#f6f7f8", color: "#666" }}>
+              <Badge className="mt-3">
                 {c.member_count} member{c.member_count === 1 ? "" : "s"}
-              </span>
+              </Badge>
             </Link>
           ))}
         </div>

@@ -5,10 +5,10 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 
-
+import { Badge } from "@/components/ui/Badge";
+import { Button } from "@/components/ui/Button";
 import { useRequireAuth } from "@/hooks/useRequireAuth";
 import { getCompany } from "@/lib/companies";
-import * as ui from "@/lib/ui-styles";
 
 /**
  * Company Dashboard — Module 3A. Displays company name, logo placeholder,
@@ -38,14 +38,16 @@ export default function CompanyDashboardPage() {
     if (auth.status === "authenticated") fetchCompany();
   }, [auth.status, fetchCompany]);
 
-  if (auth.status === "loading" || loading) return <main style={ui.page}>Loading…</main>;
+  if (auth.status === "loading" || loading) return <main className="p-8 text-sm text-ink-muted">Loading…</main>;
   if (auth.status === "unauthenticated") return null;
 
   if (error) {
     return (
-      <main style={ui.page}>
-        <p style={ui.errorText}>{error}</p>
-        <Link href="/companies">Back to your companies</Link>
+      <main className="mx-auto max-w-4xl px-4 py-8 sm:px-6">
+        <p className="text-sm text-danger">{error}</p>
+        <Link href="/companies" className="text-sm text-accent hover:text-accent-hover">
+          Back to your companies
+        </Link>
       </main>
     );
   }
@@ -53,74 +55,67 @@ export default function CompanyDashboardPage() {
   if (!company) return null;
 
   return (
-    <main style={ui.page}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: "1rem" }}>
-        <div style={{ display: "flex", gap: "1rem", alignItems: "center" }}>
+    <main className="mx-auto max-w-4xl px-4 py-8 sm:px-6">
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div className="flex items-center gap-4">
           {/* Logo placeholder — no logo upload exists yet (a future module); this is the
               "Logo Placeholder" the brief's Dashboard spec asks for. */}
           <div
-            style={{
-              width: 64,
-              height: 64,
-              borderRadius: 8,
-              background: "#f0f0f0",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              fontSize: "1.5rem",
-              fontWeight: 700,
-              color: "#999",
-            }}
+            className="flex h-16 w-16 shrink-0 items-center justify-center rounded-lg bg-surface text-2xl font-bold text-ink-faint"
             aria-hidden
           >
             {company.name.charAt(0).toUpperCase()}
           </div>
           <div>
-            <h1 style={{ margin: 0 }}>{company.name}</h1>
-            <p style={ui.mutedText}>{company.industry ?? "Industry not set"}</p>
+            <h1 className="font-display text-xl font-semibold text-ink">{company.name}</h1>
+            <p className="text-sm text-ink-muted">{company.industry ?? "Industry not set"}</p>
           </div>
         </div>
-        <Link href={`/companies/${company.id}/verification`} style={ui.buttonSecondary}>
-          Verification
-        </Link>
-        <Link href={`/companies/${company.id}/settings`} style={ui.buttonSecondary}>
-          Settings
-        </Link>
+        <div className="flex gap-2">
+          <Button asChild variant="secondary">
+            <Link href={`/companies/${company.id}/verification`}>Verification</Link>
+          </Button>
+          <Button asChild variant="secondary">
+            <Link href={`/companies/${company.id}/settings`}>Settings</Link>
+          </Button>
+        </div>
       </div>
 
-      <div style={{ ...ui.cardGrid, marginTop: "1.5rem" }}>
-        <div style={ui.card}>
-          <h4 style={{ marginTop: 0 }}>Location</h4>
-          <p>
+      <div className="mt-6 grid grid-cols-[repeat(auto-fill,minmax(260px,1fr))] gap-4">
+        <div className="rounded-lg border border-border bg-canvas p-5">
+          <h4 className="text-sm font-semibold text-ink">Location</h4>
+          <p className="mt-1 text-sm text-ink-muted">
             {[company.city, company.state, company.country].filter(Boolean).join(", ") || "Not set"}
           </p>
         </div>
-        <div style={ui.card}>
-          <h4 style={{ marginTop: 0 }}>Members</h4>
-          <p>{company.member_count}</p>
+        <div className="rounded-lg border border-border bg-canvas p-5">
+          <h4 className="text-sm font-semibold text-ink">Members</h4>
+          <p className="mt-1 text-sm text-ink-muted">{company.member_count}</p>
         </div>
-        <div style={ui.card}>
-          <h4 style={{ marginTop: 0 }}>Verification status</h4>
-          <span style={ui.badgeForVerification(company.verification_status)}>
+        <div className="rounded-lg border border-border bg-canvas p-5">
+          <h4 className="text-sm font-semibold text-ink">Verification status</h4>
+          <Badge variant={company.verification_status === "verified" ? "success" : "neutral"} className="mt-2">
             {company.verification_status === "verified" ? "Verified" : "Unverified"}
-          </span>
+          </Badge>
         </div>
-        <div style={ui.card}>
-          <h4 style={{ marginTop: 0 }}>Created</h4>
-          <p>{new Date(company.created_at).toLocaleDateString()}</p>
+        <div className="rounded-lg border border-border bg-canvas p-5">
+          <h4 className="text-sm font-semibold text-ink">Created</h4>
+          <p className="mt-1 text-sm text-ink-muted">{new Date(company.created_at).toLocaleDateString()}</p>
         </div>
       </div>
 
       {company.description && (
-        <div style={{ marginTop: "1.5rem" }}>
-          <h3>About</h3>
-          <p>{company.description}</p>
+        <div className="mt-6">
+          <h3 className="text-sm font-semibold text-ink">About</h3>
+          <p className="mt-1 text-sm text-ink-muted">{company.description}</p>
         </div>
       )}
 
-      <p style={{ ...ui.mutedText, marginTop: "2rem" }}>
-        Your role here: <strong>{company.my_role}</strong> · Public profile:{" "}
-        <Link href={`/company/${company.slug}`}>/company/{company.slug}</Link>
+      <p className="mt-8 text-sm text-ink-muted">
+        Your role here: <strong className="text-ink">{company.my_role}</strong> · Public profile:{" "}
+        <Link href={`/company/${company.slug}`} className="text-accent hover:text-accent-hover">
+          /company/{company.slug}
+        </Link>
       </p>
     </main>
   );

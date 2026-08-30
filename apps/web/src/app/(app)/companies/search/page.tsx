@@ -4,9 +4,11 @@ import type { CompanySearchPage, CompanySearchParams } from "@platform/shared-ty
 import Link from "next/link";
 import { useEffect, useState } from "react";
 
-
+import { Badge } from "@/components/ui/Badge";
+import { Button } from "@/components/ui/Button";
+import { Input } from "@/components/ui/Input";
+import { Select } from "@/components/ui/Select";
 import { searchCompanies } from "@/lib/companies";
-import * as ui from "@/lib/ui-styles";
 
 const PAGE_SIZE = 12;
 
@@ -44,110 +46,99 @@ export default function CompanySearchPage() {
   }
 
   return (
-    <main style={ui.page}>
-      <h1>Find suppliers</h1>
+    <main className="mx-auto max-w-4xl px-4 py-8 sm:px-6">
+      <h1 className="font-display text-xl font-semibold text-ink">Find suppliers</h1>
 
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: "0.75rem", marginBottom: "1rem" }}>
-        <input
-          style={ui.input}
+      <div className="mt-6 grid grid-cols-[repeat(auto-fit,minmax(160px,1fr))] gap-3">
+        <Input
+          label="Company name"
           placeholder="Company name"
           value={filters.name}
           onChange={(e) => updateFilter("name", e.target.value)}
         />
-        <input
-          style={ui.input}
+        <Input
+          label="Industry"
           placeholder="Industry"
           value={filters.industry}
           onChange={(e) => updateFilter("industry", e.target.value)}
         />
-        <input
-          style={ui.input}
+        <Input
+          label="Country"
           placeholder="Country"
           value={filters.country}
           onChange={(e) => updateFilter("country", e.target.value)}
         />
-        <input
-          style={ui.input}
+        <Input
+          label="City"
           placeholder="City"
           value={filters.city}
           onChange={(e) => updateFilter("city", e.target.value)}
         />
       </div>
 
-      <div style={{ display: "flex", gap: "0.75rem", marginBottom: "1.5rem", alignItems: "center" }}>
-        <label style={ui.mutedText}>
-          Sort by{" "}
-          <select
-            style={{ ...ui.input, display: "inline-block" }}
-            value={sortBy}
-            onChange={(e) => setSortBy(e.target.value as typeof sortBy)}
-          >
-            <option value="created_at">Newest</option>
-            <option value="name">Name</option>
-            <option value="city">City</option>
-            <option value="country">Country</option>
-          </select>
-        </label>
-        <button
-          type="button"
-          style={ui.buttonSecondary}
-          onClick={() => setSortOrder((o) => (o === "asc" ? "desc" : "asc"))}
+      <div className="mt-4 flex items-end gap-3">
+        <Select
+          label="Sort by"
+          className="w-40"
+          value={sortBy}
+          onChange={(e) => setSortBy(e.target.value as typeof sortBy)}
         >
+          <option value="created_at">Newest</option>
+          <option value="name">Name</option>
+          <option value="city">City</option>
+          <option value="country">Country</option>
+        </Select>
+        <Button type="button" variant="secondary" onClick={() => setSortOrder((o) => (o === "asc" ? "desc" : "asc"))}>
           {sortOrder === "asc" ? "↑ Ascending" : "↓ Descending"}
-        </button>
+        </Button>
       </div>
 
-      {error && <p style={ui.errorText}>{error}</p>}
-      {loading && <p style={ui.mutedText}>Searching…</p>}
+      {error && <p className="mt-4 text-sm text-danger">{error}</p>}
+      {loading && <p className="mt-4 text-sm text-ink-muted">Searching…</p>}
 
       {!loading && result && result.items.length === 0 && (
-        <div style={{ ...ui.card, textAlign: "center", padding: "3rem" }}>
-          <p>No companies match your search.</p>
+        <div className="mt-6 rounded-lg border border-border bg-canvas p-12 text-center">
+          <p className="text-sm text-ink-muted">No companies match your search.</p>
         </div>
       )}
 
       {!loading && result && result.items.length > 0 && (
         <>
-          <div style={ui.cardGrid}>
+          <div className="mt-6 grid grid-cols-[repeat(auto-fill,minmax(260px,1fr))] gap-4">
             {result.items.map((c) => (
               <Link
                 key={c.id}
                 href={`/company/${c.slug}`}
-                style={{ ...ui.card, textDecoration: "none", color: "inherit" }}
+                className="rounded-lg border border-border bg-canvas p-5 transition-colors hover:bg-surface"
               >
-                <h3 style={{ margin: "0 0 0.35rem" }}>{c.name}</h3>
-                <p style={ui.mutedText}>
+                <h3 className="text-sm font-semibold text-ink">{c.name}</h3>
+                <p className="mt-1 text-sm text-ink-muted">
                   {c.industry ?? "Industry not set"}
                   {c.city ? ` · ${c.city}` : ""}
                   {c.country ? `, ${c.country}` : ""}
                 </p>
-                <span style={ui.badgeForVerification(c.verification_status)}>
+                <Badge variant={c.verification_status === "verified" ? "success" : "neutral"} className="mt-3">
                   {c.verification_status === "verified" ? "Verified" : "Unverified"}
-                </span>
+                </Badge>
               </Link>
             ))}
           </div>
 
-          <div style={{ display: "flex", gap: "0.75rem", marginTop: "1.5rem", alignItems: "center" }}>
-            <button
-              type="button"
-              style={ui.buttonSecondary}
-              disabled={page <= 1}
-              onClick={() => setPage((p) => p - 1)}
-            >
+          <div className="mt-6 flex items-center gap-3">
+            <Button type="button" variant="secondary" disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>
               Previous
-            </button>
-            <span style={ui.mutedText}>
+            </Button>
+            <span className="text-sm text-ink-muted">
               Page {result.page} of {result.total_pages} ({result.total} total)
             </span>
-            <button
+            <Button
               type="button"
-              style={ui.buttonSecondary}
+              variant="secondary"
               disabled={page >= result.total_pages}
               onClick={() => setPage((p) => p + 1)}
             >
               Next
-            </button>
+            </Button>
           </div>
         </>
       )}

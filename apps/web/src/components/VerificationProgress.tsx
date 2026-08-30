@@ -1,9 +1,5 @@
-"use client";
-
 import type { VerificationScorePublic } from "@platform/shared-types";
 import { VERIFICATION_LEVEL_LABELS } from "@platform/shared-types";
-
-import * as ui from "@/lib/ui-styles";
 
 /**
  * Shared "Verification Progress" display — Module 3B. Used by the
@@ -13,43 +9,31 @@ import * as ui from "@/lib/ui-styles";
  */
 export function VerificationProgress({ score }: { score: VerificationScorePublic }) {
   return (
-    <div style={ui.card}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
-        <h3 style={{ margin: 0 }}>{VERIFICATION_LEVEL_LABELS[score.level]}</h3>
-        <span style={{ fontSize: "1.5rem", fontWeight: 700 }}>{score.percentage}%</span>
+    <div className="rounded-lg border border-border bg-canvas p-5">
+      <div className="flex items-baseline justify-between">
+        <h3 className="text-sm font-semibold text-ink">{VERIFICATION_LEVEL_LABELS[score.level]}</h3>
+        <span className="text-2xl font-bold text-ink">{score.percentage}%</span>
       </div>
-      <div
-        style={{
-          height: 8,
-          borderRadius: 4,
-          background: "#eee",
-          marginTop: "0.75rem",
-          overflow: "hidden",
-        }}
-      >
+      <div className="mt-3 h-2 overflow-hidden rounded-full bg-surface">
         <div
-          style={{
-            height: "100%",
-            width: `${score.percentage}%`,
-            background: "#1a7f37",
-            transition: "width 0.3s ease",
-          }}
+          className="h-full rounded-full bg-success transition-[width] duration-300 ease-out"
+          style={{ width: `${score.percentage}%` }}
         />
       </div>
 
       {score.next_level && (
-        <p style={ui.mutedText}>
-          Next level: <strong>{VERIFICATION_LEVEL_LABELS[score.next_level]}</strong>
+        <p className="mt-3 text-sm text-ink-muted">
+          Next level: <strong className="text-ink">{VERIFICATION_LEVEL_LABELS[score.next_level]}</strong>
         </p>
       )}
 
       {score.missing_requirements.length > 0 && (
-        <div style={{ marginTop: "1rem" }}>
-          <h4 style={{ marginBottom: "0.5rem" }}>Missing requirements</h4>
-          <ul style={{ margin: 0, paddingLeft: "1.25rem" }}>
+        <div className="mt-4">
+          <h4 className="text-sm font-semibold text-ink">Missing requirements</h4>
+          <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-ink">
             {score.missing_requirements.map((req) => (
-              <li key={req.key} style={{ marginBottom: "0.25rem" }}>
-                {req.label} <span style={ui.mutedText}>(+{req.weight}%)</span>
+              <li key={req.key}>
+                {req.label} <span className="text-ink-muted">(+{req.weight}%)</span>
               </li>
             ))}
           </ul>
@@ -57,7 +41,7 @@ export function VerificationProgress({ score }: { score: VerificationScorePublic
       )}
 
       {score.missing_requirements.length === 0 && (
-        <p style={{ color: "#1a7f37", marginTop: "1rem" }}>All requirements met — fully verified.</p>
+        <p className="mt-4 text-sm text-success">All requirements met — fully verified.</p>
       )}
     </div>
   );

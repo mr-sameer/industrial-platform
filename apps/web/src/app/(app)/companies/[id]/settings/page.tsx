@@ -5,10 +5,11 @@ import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 
-
+import { Button } from "@/components/ui/Button";
+import { Input } from "@/components/ui/Input";
+import { Textarea } from "@/components/ui/Textarea";
 import { useRequireAuth } from "@/hooks/useRequireAuth";
 import { deleteCompany, getCompany, updateCompany } from "@/lib/companies";
-import * as ui from "@/lib/ui-styles";
 
 /**
  * Company Settings — Module 3A. Edit profile, delete company, and a
@@ -57,16 +58,16 @@ export default function CompanySettingsPage() {
     if (auth.status === "authenticated") fetchCompany();
   }, [auth.status, fetchCompany]);
 
-  if (auth.status === "loading") return <main style={ui.page}>Loading…</main>;
+  if (auth.status === "loading") return <main className="p-8 text-sm text-ink-muted">Loading…</main>;
   if (auth.status === "unauthenticated") return null;
   if (loadError) {
     return (
-      <main style={ui.page}>
-        <p style={ui.errorText}>{loadError}</p>
+      <main className="mx-auto max-w-4xl px-4 py-8 sm:px-6">
+        <p className="text-sm text-danger">{loadError}</p>
       </main>
     );
   }
-  if (!company) return <main style={ui.page}>Loading…</main>;
+  if (!company) return <main className="p-8 text-sm text-ink-muted">Loading…</main>;
 
   const canEdit = company.my_role === "owner" || company.my_role === "admin" || company.my_role === "editor";
   const canDelete = company.my_role === "owner";
@@ -100,113 +101,109 @@ export default function CompanySettingsPage() {
   }
 
   return (
-    <main style={ui.page}>
+    <main className="mx-auto max-w-4xl px-4 py-8 sm:px-6">
       <p>
-        <Link href={`/companies/${params.id}`}>&larr; Back to dashboard</Link>
+        <Link href={`/companies/${params.id}`} className="text-sm text-accent hover:text-accent-hover">
+          &larr; Back to dashboard
+        </Link>
       </p>
-      <h1>Company settings</h1>
+      <h1 className="mt-2 font-display text-xl font-semibold text-ink">Company settings</h1>
 
-      {!canEdit && <p style={ui.mutedText}>You have view-only access to this company&apos;s settings.</p>}
+      {!canEdit && <p className="mt-1 text-sm text-ink-muted">You have view-only access to this company&apos;s settings.</p>}
 
       <form
         onSubmit={handleSave}
-        style={{ display: "flex", flexDirection: "column", gap: "1rem", maxWidth: 520, opacity: canEdit ? 1 : 0.6 }}
+        className="mt-6 flex max-w-[520px] flex-col gap-4"
+        style={{ opacity: canEdit ? 1 : 0.6 }}
       >
-        <fieldset disabled={!canEdit} style={{ border: "none", padding: 0, display: "contents" }}>
-          <div style={ui.formField}>
-            <label htmlFor="name">Company name</label>
-            <input
-              id="name"
-              style={ui.input}
-              value={form.name ?? ""}
-              onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
-            />
-          </div>
-          <div style={ui.formField}>
-            <label htmlFor="legal_name">
-              Legal name {company.my_role === "editor" && <span style={ui.mutedText}>(Admin/Owner only)</span>}
-            </label>
-            <input
-              id="legal_name"
-              disabled={company.my_role === "editor"}
-              style={ui.input}
-              value={form.legal_name ?? ""}
-              onChange={(e) => setForm((f) => ({ ...f, legal_name: e.target.value }))}
-            />
-          </div>
-          <div style={ui.formField}>
-            <label htmlFor="description">Description</label>
-            <textarea
-              id="description"
-              rows={3}
-              style={ui.input}
-              value={form.description ?? ""}
-              onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))}
-            />
-          </div>
-          <div style={ui.formField}>
-            <label htmlFor="industry">Industry</label>
-            <input
-              id="industry"
-              style={ui.input}
-              value={form.industry ?? ""}
-              onChange={(e) => setForm((f) => ({ ...f, industry: e.target.value }))}
-            />
-          </div>
-          <div style={ui.formField}>
-            <label htmlFor="website">Website</label>
-            <input
-              id="website"
-              style={ui.input}
-              value={form.website ?? ""}
-              onChange={(e) => setForm((f) => ({ ...f, website: e.target.value }))}
-            />
-          </div>
+        <fieldset disabled={!canEdit} className="contents border-none p-0">
+          <Input
+            label="Company name"
+            id="name"
+            value={form.name ?? ""}
+            onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
+          />
+          <Input
+            label={
+              company.my_role === "editor" ? (
+                <>
+                  Legal name <span className="text-ink-muted">(Admin/Owner only)</span>
+                </>
+              ) : (
+                "Legal name"
+              )
+            }
+            id="legal_name"
+            disabled={company.my_role === "editor"}
+            value={form.legal_name ?? ""}
+            onChange={(e) => setForm((f) => ({ ...f, legal_name: e.target.value }))}
+          />
+          <Textarea
+            label="Description"
+            id="description"
+            rows={3}
+            value={form.description ?? ""}
+            onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))}
+          />
+          <Input
+            label="Industry"
+            id="industry"
+            value={form.industry ?? ""}
+            onChange={(e) => setForm((f) => ({ ...f, industry: e.target.value }))}
+          />
+          <Input
+            label="Website"
+            id="website"
+            value={form.website ?? ""}
+            onChange={(e) => setForm((f) => ({ ...f, website: e.target.value }))}
+          />
 
-          {saveError && <p style={ui.errorText}>{saveError}</p>}
-          {saved && <p style={{ color: "#1a7f37" }}>Saved.</p>}
+          {saveError && <p className="text-sm text-danger">{saveError}</p>}
+          {saved && <p className="text-sm text-success">Saved.</p>}
 
-          <button type="submit" disabled={saving} style={ui.button}>
+          <Button type="submit" disabled={saving} className="self-start">
             {saving ? "Saving…" : "Save changes"}
-          </button>
+          </Button>
         </fieldset>
       </form>
 
-      <hr style={{ margin: "2.5rem 0", border: "none", borderTop: "1px solid #eee" }} />
+      <hr className="my-10 border-t border-border" />
 
       <section>
-        <h2>Transfer ownership</h2>
-        <p style={ui.mutedText}>
+        <h2 className="font-display text-lg font-semibold text-ink">Transfer ownership</h2>
+        <p className="mt-2 text-sm text-ink-muted">
           Ownership transfer is available via the API (
-          <code>PATCH /companies/{"{id}"}/members/{"{member}"}</code> with <code>role: &quot;owner&quot;</code>) —
-          see <code>docs/adr/0024-ownership-transfer-mechanism.md</code>. A full member-picker UI for this is
-          out of Module 3A&apos;s scope; this placeholder confirms the settings page has a home for it.
+          <code className="font-mono text-xs">PATCH /companies/{"{id}"}/members/{"{member}"}</code> with{" "}
+          <code className="font-mono text-xs">role: &quot;owner&quot;</code>) — see{" "}
+          <code className="font-mono text-xs">docs/adr/0024-ownership-transfer-mechanism.md</code>. A full
+          member-picker UI for this is out of Module 3A&apos;s scope; this placeholder confirms the settings page
+          has a home for it.
         </p>
-        <button type="button" disabled style={{ ...ui.buttonSecondary, cursor: "not-allowed" }}>
+        <Button type="button" variant="secondary" disabled className="mt-3 cursor-not-allowed">
           Transfer ownership (coming soon)
-        </button>
+        </Button>
       </section>
 
       {canDelete && (
-        <section style={{ marginTop: "2.5rem" }}>
-          <h2>Danger zone</h2>
+        <section className="mt-10">
+          <h2 className="font-display text-lg font-semibold text-ink">Danger zone</h2>
           {!confirmingDelete ? (
-            <button type="button" style={ui.buttonDanger} onClick={() => setConfirmingDelete(true)}>
+            <Button type="button" variant="danger" className="mt-3" onClick={() => setConfirmingDelete(true)}>
               Delete company
-            </button>
+            </Button>
           ) : (
-            <div style={{ ...ui.card, borderColor: "#cf222e" }}>
-              <p>
+            <div className="mt-3 rounded-lg border border-danger bg-canvas p-5">
+              <p className="text-sm text-ink">
                 This archives <strong>{company.name}</strong>. It will no longer appear in search or be
                 accessible via its public profile. This cannot be undone from the UI.
               </p>
-              <div style={{ display: "flex", gap: "0.75rem" }}>
-                <button type="button" style={ui.buttonDanger} disabled={deleting} onClick={handleDelete}>
+              <div className="mt-3 flex gap-3">
+                <Button type="button" variant="danger" disabled={deleting} onClick={handleDelete}>
                   {deleting ? "Deleting…" : "Confirm delete"}
-                </button>
-                <button type="button" style={ui.buttonSecondary} onClick={() => setConfirmingDelete(false)}>
+                </Button>
+                <Button type="button" variant="secondary" onClick={() => setConfirmingDelete(false)}>
                   Cancel
-                </button>
+                </Button>
               </div>
             </div>
           )}

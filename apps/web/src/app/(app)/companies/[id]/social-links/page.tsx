@@ -5,10 +5,10 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 
-
+import { Button } from "@/components/ui/Button";
+import { Input } from "@/components/ui/Input";
 import { useRequireAuth } from "@/hooks/useRequireAuth";
 import { deleteSocialLink, listSocialLinks, upsertSocialLink } from "@/lib/company-verification";
-import * as ui from "@/lib/ui-styles";
 
 const PLATFORMS: SocialPlatform[] = ["linkedin", "youtube", "facebook", "instagram", "x"];
 const PLATFORM_LABELS: Record<SocialPlatform, string> = {
@@ -43,7 +43,7 @@ export default function SocialLinksPage() {
     if (auth.status === "authenticated") fetchLinks();
   }, [auth.status, fetchLinks]);
 
-  if (auth.status === "loading") return <main style={ui.page}>Loading…</main>;
+  if (auth.status === "loading") return <main className="p-8 text-sm text-ink-muted">Loading…</main>;
   if (auth.status === "unauthenticated") return null;
 
   async function handleSave(platform: SocialPlatform) {
@@ -70,37 +70,34 @@ export default function SocialLinksPage() {
   }
 
   return (
-    <main style={ui.page}>
+    <main className="mx-auto max-w-4xl px-4 py-8 sm:px-6">
       <p>
-        <Link href={`/companies/${params.id}/verification`}>&larr; Back to verification</Link>
+        <Link href={`/companies/${params.id}/verification`} className="text-sm text-accent hover:text-accent-hover">
+          &larr; Back to verification
+        </Link>
       </p>
-      <h1>Social links</h1>
-      {error && <p style={ui.errorText}>{error}</p>}
+      <h1 className="mt-2 font-display text-xl font-semibold text-ink">Social links</h1>
+      {error && <p className="mt-4 text-sm text-danger">{error}</p>}
 
-      <div style={{ display: "flex", flexDirection: "column", gap: "1rem", maxWidth: 520 }}>
+      <div className="mt-6 flex max-w-[520px] flex-col gap-4">
         {PLATFORMS.map((platform) => (
-          <div key={platform} style={ui.formField}>
-            <label htmlFor={platform}>{PLATFORM_LABELS[platform]}</label>
-            <div style={{ display: "flex", gap: "0.5rem" }}>
-              <input
-                id={platform}
-                type="url"
-                style={ui.input}
-                placeholder={`https://${platform}.com/...`}
-                value={links[platform] ?? ""}
-                onChange={(e) => setLinks((prev) => ({ ...prev, [platform]: e.target.value }))}
-              />
-              <button
-                type="button"
-                style={ui.button}
-                disabled={saving === platform}
-                onClick={() => handleSave(platform)}
-              >
+          <div key={platform} className="flex flex-col gap-2 sm:flex-row sm:items-end">
+            <Input
+              label={PLATFORM_LABELS[platform]}
+              id={platform}
+              type="url"
+              className="sm:flex-1"
+              placeholder={`https://${platform}.com/...`}
+              value={links[platform] ?? ""}
+              onChange={(e) => setLinks((prev) => ({ ...prev, [platform]: e.target.value }))}
+            />
+            <div className="flex gap-2">
+              <Button type="button" disabled={saving === platform} onClick={() => handleSave(platform)}>
                 Save
-              </button>
-              <button type="button" style={ui.buttonSecondary} onClick={() => handleRemove(platform)}>
+              </Button>
+              <Button type="button" variant="secondary" onClick={() => handleRemove(platform)}>
                 Remove
-              </button>
+              </Button>
             </div>
           </div>
         ))}

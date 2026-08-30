@@ -5,11 +5,13 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 
-
+import { Button } from "@/components/ui/Button";
+import { Input } from "@/components/ui/Input";
+import { Select } from "@/components/ui/Select";
+import { Textarea } from "@/components/ui/Textarea";
 import { useRequireAuth } from "@/hooks/useRequireAuth";
 import { getCompany } from "@/lib/companies";
 import { getBusinessInfo, updateBusinessInfo } from "@/lib/company-verification";
-import * as ui from "@/lib/ui-styles";
 
 const LEGAL_ENTITY_TYPES: LegalEntityType[] = [
   "private_limited",
@@ -63,12 +65,12 @@ export default function BusinessInfoPage() {
     if (auth.status === "authenticated") fetchCompany();
   }, [auth.status, fetchCompany]);
 
-  if (auth.status === "loading" || !loaded) return <main style={ui.page}>Loading…</main>;
+  if (auth.status === "loading" || !loaded) return <main className="p-8 text-sm text-ink-muted">Loading…</main>;
   if (auth.status === "unauthenticated") return null;
   if (loadError) {
     return (
-      <main style={ui.page}>
-        <p style={ui.errorText}>{loadError}</p>
+      <main className="mx-auto max-w-4xl px-4 py-8 sm:px-6">
+        <p className="text-sm text-danger">{loadError}</p>
       </main>
     );
   }
@@ -89,166 +91,143 @@ export default function BusinessInfoPage() {
   }
 
   return (
-    <main style={ui.page}>
+    <main className="mx-auto max-w-4xl px-4 py-8 sm:px-6">
       <p>
-        <Link href={`/companies/${params.id}/verification`}>&larr; Back to verification</Link>
+        <Link href={`/companies/${params.id}/verification`} className="text-sm text-accent hover:text-accent-hover">
+          &larr; Back to verification
+        </Link>
       </p>
-      <h1>Business information</h1>
-      {!canEdit && <p style={ui.mutedText}>You have view-only access.</p>}
+      <h1 className="mt-2 font-display text-xl font-semibold text-ink">Business information</h1>
+      {!canEdit && <p className="mt-1 text-sm text-ink-muted">You have view-only access.</p>}
 
       <form
         onSubmit={handleSave}
-        style={{ display: "flex", flexDirection: "column", gap: "1rem", maxWidth: 520, opacity: canEdit ? 1 : 0.6 }}
+        className="mt-6 flex max-w-[520px] flex-col gap-4"
+        style={{ opacity: canEdit ? 1 : 0.6 }}
       >
-        <fieldset disabled={!canEdit} style={{ border: "none", padding: 0, display: "contents" }}>
-          <div style={ui.formField}>
-            <label htmlFor="legal_entity_type">Legal entity type</label>
-            <select
-              id="legal_entity_type"
-              style={ui.input}
-              value={form.legal_entity_type ?? ""}
-              onChange={(e) =>
-                setForm((f) => ({ ...f, legal_entity_type: (e.target.value || undefined) as LegalEntityType | undefined }))
-              }
-            >
-              <option value="">Select…</option>
-              {LEGAL_ENTITY_TYPES.map((t) => (
-                <option key={t} value={t}>
-                  {t.replace(/_/g, " ")}
-                </option>
-              ))}
-            </select>
-          </div>
+        <fieldset disabled={!canEdit} className="contents border-none p-0">
+          <Select
+            label="Legal entity type"
+            id="legal_entity_type"
+            value={form.legal_entity_type ?? ""}
+            onChange={(e) =>
+              setForm((f) => ({ ...f, legal_entity_type: (e.target.value || undefined) as LegalEntityType | undefined }))
+            }
+          >
+            <option value="">Select…</option>
+            {LEGAL_ENTITY_TYPES.map((t) => (
+              <option key={t} value={t}>
+                {t.replace(/_/g, " ")}
+              </option>
+            ))}
+          </Select>
 
-          <div style={ui.formField}>
-            <label htmlFor="business_type">Manufacturer or trader?</label>
-            <select
-              id="business_type"
-              style={ui.input}
-              value={form.business_type ?? ""}
-              onChange={(e) =>
-                setForm((f) => ({ ...f, business_type: (e.target.value || undefined) as BusinessType | undefined }))
-              }
-            >
-              <option value="">Select…</option>
-              {BUSINESS_TYPES.map((t) => (
-                <option key={t} value={t}>
-                  {t}
-                </option>
-              ))}
-            </select>
-          </div>
+          <Select
+            label="Manufacturer or trader?"
+            id="business_type"
+            value={form.business_type ?? ""}
+            onChange={(e) =>
+              setForm((f) => ({ ...f, business_type: (e.target.value || undefined) as BusinessType | undefined }))
+            }
+          >
+            <option value="">Select…</option>
+            {BUSINESS_TYPES.map((t) => (
+              <option key={t} value={t}>
+                {t}
+              </option>
+            ))}
+          </Select>
 
-          <label style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+          <label className="flex items-center gap-2 text-sm text-ink">
             <input
               type="checkbox"
+              className="h-4 w-4 rounded border-border-strong accent-accent"
               checked={form.export_capable ?? false}
               onChange={(e) => setForm((f) => ({ ...f, export_capable: e.target.checked }))}
             />
             Export capable
           </label>
 
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1rem" }}>
-            <div style={ui.formField}>
-              <label htmlFor="gst_number">GSTIN</label>
-              <input
-                id="gst_number"
-                style={ui.input}
-                value={form.gst_number ?? ""}
-                onChange={(e) => setForm((f) => ({ ...f, gst_number: e.target.value }))}
-              />
-            </div>
-            <div style={ui.formField}>
-              <label htmlFor="pan">PAN</label>
-              <input
-                id="pan"
-                style={ui.input}
-                value={form.pan ?? ""}
-                onChange={(e) => setForm((f) => ({ ...f, pan: e.target.value }))}
-              />
-            </div>
-          </div>
-
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1rem" }}>
-            <div style={ui.formField}>
-              <label htmlFor="cin">CIN</label>
-              <input
-                id="cin"
-                style={ui.input}
-                value={form.cin ?? ""}
-                onChange={(e) => setForm((f) => ({ ...f, cin: e.target.value }))}
-              />
-            </div>
-            <div style={ui.formField}>
-              <label htmlFor="msme_number">MSME number</label>
-              <input
-                id="msme_number"
-                style={ui.input}
-                value={form.msme_number ?? ""}
-                onChange={(e) => setForm((f) => ({ ...f, msme_number: e.target.value }))}
-              />
-            </div>
-          </div>
-
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1rem" }}>
-            <div style={ui.formField}>
-              <label htmlFor="iec_number">IEC number</label>
-              <input
-                id="iec_number"
-                style={ui.input}
-                value={form.iec_number ?? ""}
-                onChange={(e) => setForm((f) => ({ ...f, iec_number: e.target.value }))}
-              />
-            </div>
-            <div style={ui.formField}>
-              <label htmlFor="business_registration_date">Registration date</label>
-              <input
-                id="business_registration_date"
-                type="date"
-                style={ui.input}
-                value={form.business_registration_date ?? ""}
-                onChange={(e) => setForm((f) => ({ ...f, business_registration_date: e.target.value }))}
-              />
-            </div>
-          </div>
-
-          <div style={ui.formField}>
-            <label htmlFor="short_description">Short description</label>
-            <input
-              id="short_description"
-              style={ui.input}
-              maxLength={500}
-              value={form.short_description ?? ""}
-              onChange={(e) => setForm((f) => ({ ...f, short_description: e.target.value }))}
+          {/* IBM Plex Mono for GSTIN/PAN/CIN/MSME/IEC values, per docs/architecture/design-system.md. */}
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <Input
+              label="GSTIN"
+              id="gst_number"
+              className="font-mono"
+              value={form.gst_number ?? ""}
+              onChange={(e) => setForm((f) => ({ ...f, gst_number: e.target.value }))}
             />
-          </div>
-          <div style={ui.formField}>
-            <label htmlFor="mission">Mission</label>
-            <textarea
-              id="mission"
-              rows={2}
-              style={ui.input}
-              value={form.mission ?? ""}
-              onChange={(e) => setForm((f) => ({ ...f, mission: e.target.value }))}
-            />
-          </div>
-          <div style={ui.formField}>
-            <label htmlFor="vision">Vision</label>
-            <textarea
-              id="vision"
-              rows={2}
-              style={ui.input}
-              value={form.vision ?? ""}
-              onChange={(e) => setForm((f) => ({ ...f, vision: e.target.value }))}
+            <Input
+              label="PAN"
+              id="pan"
+              className="font-mono"
+              value={form.pan ?? ""}
+              onChange={(e) => setForm((f) => ({ ...f, pan: e.target.value }))}
             />
           </div>
 
-          {saveError && <p style={ui.errorText}>{saveError}</p>}
-          {saved && <p style={{ color: "#1a7f37" }}>Saved.</p>}
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <Input
+              label="CIN"
+              id="cin"
+              className="font-mono"
+              value={form.cin ?? ""}
+              onChange={(e) => setForm((f) => ({ ...f, cin: e.target.value }))}
+            />
+            <Input
+              label="MSME number"
+              id="msme_number"
+              className="font-mono"
+              value={form.msme_number ?? ""}
+              onChange={(e) => setForm((f) => ({ ...f, msme_number: e.target.value }))}
+            />
+          </div>
 
-          <button type="submit" disabled={saving} style={ui.button}>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <Input
+              label="IEC number"
+              id="iec_number"
+              className="font-mono"
+              value={form.iec_number ?? ""}
+              onChange={(e) => setForm((f) => ({ ...f, iec_number: e.target.value }))}
+            />
+            <Input
+              label="Registration date"
+              id="business_registration_date"
+              type="date"
+              value={form.business_registration_date ?? ""}
+              onChange={(e) => setForm((f) => ({ ...f, business_registration_date: e.target.value }))}
+            />
+          </div>
+
+          <Input
+            label="Short description"
+            id="short_description"
+            maxLength={500}
+            value={form.short_description ?? ""}
+            onChange={(e) => setForm((f) => ({ ...f, short_description: e.target.value }))}
+          />
+          <Textarea
+            label="Mission"
+            id="mission"
+            rows={2}
+            value={form.mission ?? ""}
+            onChange={(e) => setForm((f) => ({ ...f, mission: e.target.value }))}
+          />
+          <Textarea
+            label="Vision"
+            id="vision"
+            rows={2}
+            value={form.vision ?? ""}
+            onChange={(e) => setForm((f) => ({ ...f, vision: e.target.value }))}
+          />
+
+          {saveError && <p className="text-sm text-danger">{saveError}</p>}
+          {saved && <p className="text-sm text-success">Saved.</p>}
+
+          <Button type="submit" disabled={saving} className="self-start">
             {saving ? "Saving…" : "Save changes"}
-          </button>
+          </Button>
         </fieldset>
       </form>
     </main>

@@ -6,10 +6,10 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-
+import { Button } from "@/components/ui/Button";
+import { Select } from "@/components/ui/Select";
 import { useRequireAuth } from "@/hooks/useRequireAuth";
 import { deleteDocument, listDocuments, replaceDocument, uploadDocument } from "@/lib/company-verification";
-import * as ui from "@/lib/ui-styles";
 
 const DOCUMENT_TYPES = Object.keys(DOCUMENT_TYPE_LABELS) as DocumentType[];
 
@@ -38,7 +38,7 @@ export default function DocumentsPage() {
     if (auth.status === "authenticated") fetchDocuments();
   }, [auth.status, fetchDocuments]);
 
-  if (auth.status === "loading") return <main style={ui.page}>Loading…</main>;
+  if (auth.status === "loading") return <main className="p-8 text-sm text-ink-muted">Loading…</main>;
   if (auth.status === "unauthenticated") return null;
 
   async function handleUpload() {
@@ -79,17 +79,20 @@ export default function DocumentsPage() {
   }
 
   return (
-    <main style={ui.page}>
+    <main className="mx-auto max-w-4xl px-4 py-8 sm:px-6">
       <p>
-        <Link href={`/companies/${params.id}/verification`}>&larr; Back to verification</Link>
+        <Link href={`/companies/${params.id}/verification`} className="text-sm text-accent hover:text-accent-hover">
+          &larr; Back to verification
+        </Link>
       </p>
-      <h1>Documents</h1>
+      <h1 className="mt-2 font-display text-xl font-semibold text-ink">Documents</h1>
 
-      <div style={{ ...ui.card, marginBottom: "1.5rem" }}>
-        <h3 style={{ marginTop: 0 }}>Upload a document</h3>
-        <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap", alignItems: "center" }}>
-          <select
-            style={ui.input}
+      <div className="mt-6 rounded-lg border border-border bg-canvas p-5">
+        <h3 className="text-sm font-semibold text-ink">Upload a document</h3>
+        <div className="mt-3 flex flex-wrap items-end gap-3">
+          <Select
+            label="Document type"
+            className="w-56"
             value={documentType}
             onChange={(e) => setDocumentType(e.target.value as DocumentType)}
           >
@@ -98,53 +101,58 @@ export default function DocumentsPage() {
                 {DOCUMENT_TYPE_LABELS[t]}
               </option>
             ))}
-          </select>
-          <input ref={fileInputRef} type="file" accept="application/pdf,image/jpeg,image/png,image/webp" />
-          <button type="button" style={ui.button} disabled={uploading} onClick={handleUpload}>
+          </Select>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="application/pdf,image/jpeg,image/png,image/webp"
+            className="text-sm text-ink-muted"
+          />
+          <Button type="button" disabled={uploading} onClick={handleUpload}>
             {uploading ? "Uploading…" : "Upload"}
-          </button>
+          </Button>
         </div>
-        <p style={ui.mutedText}>PDF or image, up to 15 MB.</p>
+        <p className="mt-2 text-sm text-ink-muted">PDF or image, up to 15 MB.</p>
       </div>
 
-      {error && <p style={ui.errorText}>{error}</p>}
+      {error && <p className="mt-4 text-sm text-danger">{error}</p>}
 
-      {documents === null && !error && <p style={ui.mutedText}>Loading documents…</p>}
+      {documents === null && !error && <p className="mt-4 text-sm text-ink-muted">Loading documents…</p>}
       {documents !== null && documents.length === 0 && (
-        <div style={{ ...ui.card, textAlign: "center", padding: "2rem" }}>
-          <p>No documents uploaded yet.</p>
+        <div className="mt-4 rounded-lg border border-border bg-canvas p-8 text-center">
+          <p className="text-sm text-ink-muted">No documents uploaded yet.</p>
         </div>
       )}
 
       {documents !== null && documents.length > 0 && (
-        <div style={ui.cardGrid}>
+        <div className="mt-4 grid grid-cols-[repeat(auto-fill,minmax(260px,1fr))] gap-4">
           {documents.map((doc) => (
-            <div key={doc.id} style={ui.card}>
-              <h4 style={{ margin: "0 0 0.35rem" }}>{DOCUMENT_TYPE_LABELS[doc.document_type]}</h4>
-              <p style={ui.mutedText}>
+            <div key={doc.id} className="rounded-lg border border-border bg-canvas p-5">
+              <h4 className="text-sm font-semibold text-ink">{DOCUMENT_TYPE_LABELS[doc.document_type]}</h4>
+              <p className="mt-1 text-sm text-ink-muted">
                 Status: {doc.status} · v{doc.version}
                 {doc.is_expired && " · expired"}
               </p>
-              <p>
-                <a href={doc.file_url} target="_blank" rel="noreferrer">
+              <p className="mt-1">
+                <a href={doc.file_url} target="_blank" rel="noreferrer" className="text-sm text-accent hover:text-accent-hover">
                   View file
                 </a>
               </p>
-              <div style={{ display: "flex", gap: "0.5rem", alignItems: "center", flexWrap: "wrap" }}>
+              <div className="mt-3 flex flex-wrap items-center gap-2">
                 <input
                   ref={(el) => {
                     replaceInputRefs.current[doc.id] = el;
                   }}
                   type="file"
                   accept="application/pdf,image/jpeg,image/png,image/webp"
-                  style={{ maxWidth: 140 }}
+                  className="max-w-[140px] text-xs text-ink-muted"
                 />
-                <button type="button" style={ui.buttonSecondary} onClick={() => handleReplace(doc.id)}>
+                <Button type="button" variant="secondary" size="sm" onClick={() => handleReplace(doc.id)}>
                   Replace
-                </button>
-                <button type="button" style={ui.buttonDanger} onClick={() => handleDelete(doc.id)}>
+                </Button>
+                <Button type="button" variant="danger" size="sm" onClick={() => handleDelete(doc.id)}>
                   Delete
-                </button>
+                </Button>
               </div>
             </div>
           ))}
