@@ -3,7 +3,6 @@
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { ChevronDown, LogOut, Monitor, User as UserIcon } from "lucide-react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 
 import { Avatar } from "@/components/ui/Avatar";
 import { useAuth } from "@/contexts/AuthContext";
@@ -12,13 +11,21 @@ import { cn } from "@/lib/cn";
 /** Real user data + real logout — no placeholder content. */
 export function ProfileMenu() {
   const auth = useAuth();
-  const router = useRouter();
 
   if (!auth.user) return null;
 
-  async function handleLogout() {
-    await auth.logout();
-    router.push("/login");
+  // ForgeX Product Audit P1 #6: deliberately doesn't call router.push
+  // itself. auth.logout() now clears session state up front (see
+  // AuthContext.tsx) instead of after the POST /api/auth/logout round
+  // trip, which flips `status` to "unauthenticated" almost immediately —
+  // AppShell's existing useRequireAuth guard already redirects to /login
+  // the moment that happens. Pushing here too raced that redirect (two
+  // competing navigations to slightly different URLs) and, since the
+  // guard's push only ever fired once the network call finished, ended
+  // up not actually helping — the real fix had to be in when `status`
+  // changes, not in adding a second place that reacts to it.
+  function handleLogout() {
+    void auth.logout();
   }
 
   return (

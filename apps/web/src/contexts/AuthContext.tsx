@@ -122,6 +122,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   );
 
   const logout = useCallback(async () => {
+    // ForgeX Product Audit P1 #6: clearSession() used to run only after
+    // this await resolved, so `status` stayed "authenticated" for the
+    // full POST /api/auth/logout round trip (server logs: 0.5-2s+ in
+    // dev) with zero visual feedback in between — the audit's live
+    // testing read that gap as the click having silently failed. The
+    // comment below already establishes client-side logout as
+    // best-effort/optimistic regardless of the network outcome, so
+    // there's no reason `status` needs to wait on it: clearing first
+    // flips `useRequireAuth`'s existing "redirect when unauthenticated"
+    // effect (see AppShell) almost immediately, which is the one place
+    // that should own this navigation — see ProfileMenu.tsx, which no
+    // longer pushes its own competing redirect.
+    clearSession();
     try {
       await postJson("/api/auth/logout");
     } catch (err) {
@@ -134,7 +147,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // just means it may briefly outlive the local one.
       logger.error({ err }, "auth_logout_request_failed");
     }
-    clearSession();
   }, [clearSession]);
 
   const logoutAll = useCallback(async () => {

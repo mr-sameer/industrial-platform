@@ -26,14 +26,19 @@ function Brand() {
 export function AppShell({ children }: { children: ReactNode }) {
   const auth = useRequireAuth("/dashboard");
 
-  if (auth.status === "loading") {
+  // ForgeX Product Audit P1 #6: "unauthenticated" used to render nothing —
+  // a blank white flash between the moment logout (or any other session
+  // drop) takes effect and the redirect effect above actually landing on
+  // /login. Same spinner as the "loading" bootstrap state below, since
+  // both are "something is happening, hold on" moments, not a real empty
+  // state.
+  if (auth.status === "loading" || auth.status === "unauthenticated") {
     return (
       <div className="flex h-screen items-center justify-center bg-canvas">
         <div className="h-8 w-8 animate-spin rounded-full border-2 border-border-strong border-t-accent" />
       </div>
     );
   }
-  if (auth.status === "unauthenticated") return null;
 
   return (
     <div className="flex h-screen overflow-hidden bg-canvas">
