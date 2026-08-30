@@ -40,7 +40,7 @@ function buildMatch(overrides: Partial<RequirementMatchCandidate> = {}): Require
       { signal: "location", weight: 30, points_earned: 15 },
       { signal: "certifications", weight: 20, points_earned: 0 },
     ],
-    offering: { role: "manufacturer", moq: null, lead_time: null, capacity: null },
+    offering: { role: "manufacturer", verification_status: "unverified", moq: null, lead_time: null, capacity: null },
     evidence: [],
     ...overrides,
   };
@@ -120,13 +120,36 @@ describe("RecommendationCard", () => {
   });
 
   it("renders the manufacturer/supplier role from the real Offering", () => {
-    render(<RecommendationCard match={buildMatch({ offering: { role: "manufacturer", moq: null, lead_time: null, capacity: null } })} />);
+    render(
+      <RecommendationCard
+        match={buildMatch({
+          offering: { role: "manufacturer", verification_status: "unverified", moq: null, lead_time: null, capacity: null },
+        })}
+      />
+    );
     expect(screen.getByText("Manufacturer")).toBeTruthy();
+  });
+
+  it("P1 #8 (ForgeX Product Audit): marks an unverified role claim as (unverified), never presenting it with the same confidence as a checked fact", () => {
+    const match = buildMatch({
+      offering: { role: "manufacturer", verification_status: "unverified", moq: null, lead_time: null, capacity: null },
+    });
+    render(<RecommendationCard match={match} />);
+    expect(screen.getByText("(unverified)")).toBeTruthy();
+  });
+
+  it("P1 #8 (ForgeX Product Audit): drops the (unverified) qualifier only when the backend itself reports the Offering role as verified", () => {
+    const match = buildMatch({
+      offering: { role: "manufacturer", verification_status: "verified", moq: null, lead_time: null, capacity: null },
+    });
+    render(<RecommendationCard match={match} />);
+    expect(screen.getByText("Manufacturer")).toBeTruthy();
+    expect(screen.queryByText("(unverified)")).toBeNull();
   });
 
   it("renders MOQ and lead time as Observed when the real Offering has them", () => {
     const match = buildMatch({
-      offering: { role: "manufacturer", moq: "1 Piece", lead_time: "2 Days", capacity: null },
+      offering: { role: "manufacturer", verification_status: "unverified", moq: "1 Piece", lead_time: "2 Days", capacity: null },
     });
     render(<RecommendationCard match={match} />);
     expect(screen.getByText("1 Piece")).toBeTruthy();
@@ -135,18 +158,30 @@ describe("RecommendationCard", () => {
   });
 
   it("renders MOQ and lead time as honest Unknown when the Offering doesn't have them, never fabricating a value", () => {
-    const match = buildMatch({ offering: { role: "manufacturer", moq: null, lead_time: null, capacity: null } });
+    const match = buildMatch({
+      offering: { role: "manufacturer", verification_status: "unverified", moq: null, lead_time: null, capacity: null },
+    });
     render(<RecommendationCard match={match} />);
     expect(screen.getByText("Minimum order quantity").parentElement?.textContent).toContain("Unknown");
     expect(screen.getByText("Published lead time").parentElement?.textContent).toContain("Unknown");
   });
 
   it("only renders capacity when the Offering actually has it, per the 'only if available' rule", () => {
-    const withoutCapacity = buildMatch({ offering: { role: "manufacturer", moq: "1 Piece", lead_time: "2 Days", capacity: null } });
+    const withoutCapacity = buildMatch({
+      offering: { role: "manufacturer", verification_status: "unverified", moq: "1 Piece", lead_time: "2 Days", capacity: null },
+    });
     const { rerender } = render(<RecommendationCard match={withoutCapacity} />);
     expect(screen.queryByText("Supply capacity")).toBeNull();
 
-    const withCapacity = buildMatch({ offering: { role: "manufacturer", moq: "1 Piece", lead_time: "2 Days", capacity: "1 Piece Per Day" } });
+    const withCapacity = buildMatch({
+      offering: {
+        role: "manufacturer",
+        verification_status: "unverified",
+        moq: "1 Piece",
+        lead_time: "2 Days",
+        capacity: "1 Piece Per Day",
+      },
+    });
     rerender(<RecommendationCard match={withCapacity} />);
     expect(screen.getByText("Supply capacity")).toBeTruthy();
     expect(screen.getByText("1 Piece Per Day")).toBeTruthy();

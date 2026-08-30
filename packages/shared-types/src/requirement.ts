@@ -103,6 +103,7 @@ export interface RequirementMatchSignals {
 
 export interface RequirementMatchOfferingDetails {
   role: string;
+  verification_status: "unverified" | "verified";
   moq: string | null;
   lead_time: string | null;
   capacity: string | null;

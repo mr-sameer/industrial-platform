@@ -293,6 +293,7 @@ def _to_match_dto(
         ],
         offering=RequirementMatchOfferingDetails(
             role=candidate.offering.role.value,
+            verification_status=candidate.offering.verification_status.value,
             moq=candidate.offering.moq,
             lead_time=candidate.offering.lead_time,
             capacity=candidate.offering.capacity,

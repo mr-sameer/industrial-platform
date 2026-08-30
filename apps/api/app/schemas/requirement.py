@@ -185,6 +185,14 @@ class RequirementMatchOfferingDetails(BaseModel):
     """
 
     role: str
+    # Offering.verification_status (app.models.offering) — a real, honest
+    # column with no scoring logic behind it yet (no admin-review workflow
+    # sets it to "verified" today, see that model's docstring). Exposed so
+    # the client can distinguish a role claim from a role ForgeX has
+    # actually checked, instead of rendering every role with equal
+    # confidence — see the audit's "Manufacturer... no verified evidence"
+    # finding.
+    verification_status: str
     moq: str | None
     lead_time: str | None
     capacity: str | None

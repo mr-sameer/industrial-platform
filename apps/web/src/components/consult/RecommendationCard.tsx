@@ -162,8 +162,28 @@ export function RecommendationCard({ match }: { match: RequirementMatchCandidate
               <span className="rounded-full bg-accent-subtle px-2 py-0.5 text-[10px] font-medium text-accent">
                 {score}% match
               </span>
-              <span className="rounded-full border border-border-strong px-2 py-0.5 text-[10px] font-medium text-ink-muted">
+              {/* Role is a claim from the seller-published profile, not
+                  something ForgeX has independently checked (Offering.
+                  verification_status is a real column with no admin-review
+                  workflow behind it yet — see app.models.offering). Shown
+                  with the same honest OBSERVED-not-VERIFIED weight as the
+                  rest of this card, never as a confirmed fact. */}
+              <span
+                className={`flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium ${
+                  offering.verification_status === "verified"
+                    ? "bg-success-subtle text-success"
+                    : "border border-border-strong text-ink-muted"
+                }`}
+              >
+                {offering.verification_status === "verified" ? (
+                  <ShieldCheck size={10} aria-hidden />
+                ) : (
+                  <HelpCircle size={10} className="text-ink-faint" aria-hidden />
+                )}
                 {roleLabel(offering.role)}
+                {offering.verification_status !== "verified" && (
+                  <span className="text-ink-faint">(unverified)</span>
+                )}
               </span>
             </div>
             <p className="mt-0.5 text-sm text-ink-muted">{product.name}</p>
