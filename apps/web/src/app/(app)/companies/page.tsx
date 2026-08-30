@@ -45,6 +45,16 @@ export default function CompanyListPage() {
       {companies !== null && companies.length === 0 && (
         <div className="flex flex-col items-center gap-3 rounded-lg border border-border bg-canvas p-12 text-center">
           <p className="text-sm text-ink-muted">You&apos;re not part of any company yet.</p>
+          {/* ForgeX Product Audit P1 #10: the empty state previously said
+              nothing about why a company matters — buyers discover and
+              evaluate companies through Consult, and trust_tier (a real,
+              scored match signal) weighs verified companies more heavily
+              than unverified ones, so this is a factual benefit, not a
+              marketing claim. */}
+          <p className="max-w-sm text-sm text-ink-muted">
+            Buyers find and evaluate companies through ForgeX Consult — verified details are weighted more heavily
+            in every match.
+          </p>
           <Button asChild>
             <Link href="/companies/new">Create your first company</Link>
           </Button>

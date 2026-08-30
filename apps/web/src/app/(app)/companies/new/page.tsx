@@ -101,6 +101,14 @@ export default function CreateCompanyPage() {
   return (
     <main className="mx-auto max-w-4xl px-4 py-8 sm:px-6">
       <h1 className="font-display text-xl font-semibold text-ink">Create a company</h1>
+      {/* ForgeX Product Audit P1 #10: same reasoning as the Companies list
+          empty state — this explains what filling out the form below
+          actually gets you, instead of dropping straight into a form
+          with no stated purpose. */}
+      <p className="mt-1 text-sm text-ink-muted">
+        Buyers discover you through ForgeX Consult. Verification comes next — it&apos;s what turns these details
+        into evidence buyers can trust.
+      </p>
       <form onSubmit={handleSubmit} className="mt-6 flex max-w-[520px] flex-col gap-4">
         <Input
           label="Company name *"

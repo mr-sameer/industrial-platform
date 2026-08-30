@@ -75,6 +75,11 @@ describe("CreateCompanyPage", () => {
     expect(screen.queryByText(/please verify your email address before continuing/i)).toBeNull();
   });
 
+  it("P1 #10 (ForgeX Product Audit): explains what the form is for instead of dropping straight into fields with no stated purpose", () => {
+    render(<CreateCompanyPage />);
+    expect(screen.getByText(/Buyers discover you through ForgeX Consult/)).toBeTruthy();
+  });
+
   it("renders nothing while unauthenticated — the redirect effect handles navigation", () => {
     authState.status = "unauthenticated";
     authState.user = null;
