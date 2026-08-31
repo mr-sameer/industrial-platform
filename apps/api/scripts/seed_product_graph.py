@@ -111,7 +111,14 @@ SEED_CATALOG: list[
         ],
     ),
     (
-        "CNC Machines",
+        # Named to match the University's own Lesson 7 example phrasing
+        # ("Need CNC machining in India") — lib/requirement.ts's
+        # resolveCategoryId does deterministic whole-word matching after
+        # singularizing plurals, which normalizes "machines" but not the
+        # gerund "machining", so a category literally named "CNC Machines"
+        # can never match that buyer sentence (see ForgeX Product Audit
+        # §08's P0 "CNC machining in India" finding).
+        "CNC Machining",
         [
             ("Axes", None, "number"),
             ("Spindle Speed", "RPM", "number"),
