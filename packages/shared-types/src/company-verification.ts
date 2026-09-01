@@ -73,9 +73,48 @@ export interface VerificationDocumentPublic {
   status: DocumentStatus;
   uploaded_at: string;
   verified_at: string | null;
+  // The reviewer's rejection reason (null on approval or before review) —
+  // see app.services.document_service.review_document (Phase 1).
+  review_note: string | null;
   expiry_date: string | null;
   version: number;
   is_expired: boolean;
+}
+
+/**
+ * Phase 2A — the admin verification queue's row shape
+ * (app.schemas.company_verification.PendingVerificationDocumentPublic).
+ * Every VerificationDocumentPublic field, plus company_id/company_name:
+ * the queue spans every company, so unlike VerificationDocumentPublic
+ * (always fetched from an already-known company_id) a caller here has
+ * no other way to know which company a given row belongs to. Kept flat
+ * rather than extending VerificationDocumentPublic, matching this
+ * file's existing convention of standalone interfaces per response shape.
+ */
+export interface PendingVerificationDocumentPublic {
+  id: string;
+  document_type: DocumentType;
+  file_type: DocumentFileType;
+  file_url: string;
+  status: DocumentStatus;
+  uploaded_at: string;
+  verified_at: string | null;
+  review_note: string | null;
+  expiry_date: string | null;
+  version: number;
+  is_expired: boolean;
+  company_id: string;
+  company_name: string;
+}
+
+/** Same {items, total, page, page_size, total_pages} shape as every other
+ * paginated list in this codebase (e.g. CompanySearchPage, ProductSearchPage). */
+export interface PendingVerificationDocumentPage {
+  items: PendingVerificationDocumentPublic[];
+  total: number;
+  page: number;
+  page_size: number;
+  total_pages: number;
 }
 
 export interface MissingRequirementPublic {
