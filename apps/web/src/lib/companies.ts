@@ -60,8 +60,18 @@ export async function deleteCompany(companyId: string, accessToken: string): Pro
   });
 }
 
-export function getCompanyBySlug(slug: string) {
-  return apiFetch<CompanyPublic>(`/api/v1/companies/slug/${encodeURIComponent(slug)}`);
+// P0 #2 (Buyer UX Audit): the only call site for this is the public,
+// server-rendered /company/[slug] page (app/company/[slug]/page.tsx) —
+// a Server Component, so it runs inside the web container itself, not
+// the browser. Every other function in this file is called from
+// "use client" pages, where the browser-facing default baseUrl (the one
+// apiFetch falls back to) is correct. Passing serverEnv.apiBaseUrl here
+// is what src/config/server-env.ts exists for (see its own comment) —
+// without it this 500s with ECONNREFUSED 127.0.0.1:8000 under
+// `docker compose up`, since "localhost" from inside the web container
+// resolves back to the web container, not the api one.
+export function getCompanyBySlug(slug: string, baseUrl?: string) {
+  return apiFetch<CompanyPublic>(`/api/v1/companies/slug/${encodeURIComponent(slug)}`, undefined, baseUrl);
 }
 
 export function searchCompanies(params: CompanySearchParams) {
