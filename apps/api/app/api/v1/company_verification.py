@@ -17,6 +17,20 @@ an Owner-only restriction would be a stricter reading than Module 3A
 established for the conceptually equivalent action. Flagged explicitly
 per this module's own documentation practice — see
 docs/adr/0029-module-3b-verification-and-identity.md.
+
+Phase 1 addition — admin document review: `review_document` below is
+gated by the **platform-level** `app.models.user.Role.ADMIN`
+(`app.core.dependencies.require_role`), deliberately not
+`CompanyRole.ADMIN` (`app.core.company_authorization.require_company_role`,
+used everywhere else in this file). Per
+docs/domain/09-permission-matrix.md's Certificates & Verification
+table, "Approve/Reject Verification" is Platform Admin only — every
+company-scoped role, including a company's own Owner/Admin, is ❌. Using
+the company-scoped dependency here would let a company approve its own
+documents, defeating the entire point of independent verification —
+see docs/adr/0029 decision #3's "future admin-review module" note. This
+is why the two dependency modules are imported and used side by side
+below rather than one being extended to cover both cases.
 """
 
 import uuid
@@ -26,6 +40,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, s
 
 from app.core.company_authorization import CompanyOr404, CurrentMembership, require_company_role
 from app.core.config import get_settings
+from app.core.dependencies import CurrentUser, require_role
 from app.core.file_validation import FileValidationError
 from app.core.responses import ApiSuccess, success_response
 from app.core.storage import StorageBackend, get_storage_backend
@@ -33,11 +48,13 @@ from app.db.session import DbSession
 from app.models.company import Company
 from app.models.company_member import CompanyMember, CompanyRole
 from app.models.company_social_link import SocialPlatform
+from app.models.user import Role
 from app.models.verification_document import DocumentType
 from app.schemas.company_verification import (
     BusinessInfoDetail,
     BusinessInfoUpdate,
     CompanyBrandingPublic,
+    DocumentReviewRequest,
     MissingRequirementPublic,
     SocialLinkPublic,
     SocialLinkUpsert,
@@ -48,6 +65,8 @@ from app.services import branding_service, document_service, social_link_service
 from app.services import verification_score_service as scoring
 from app.services.audit_service import log_event
 from app.services.company_service import get_by_slug
+
+RequireAdmin = Annotated[object, Depends(require_role(Role.ADMIN))]
 
 router = APIRouter(prefix="/companies", tags=["company-verification"])
 settings = get_settings()
@@ -447,3 +466,70 @@ async def delete_document(
         metadata={"company_id": str(company.id), "document_id": str(document_id)},
     )
     return None
+
+
+# --------------------------------------------------------------------------
+# Document review (admin) — Phase 1 of the admin document-verification
+# review workflow. See this file's module docstring for why RequireAdmin
+# (platform Role.ADMIN) is used here instead of require_company_role.
+# --------------------------------------------------------------------------
+
+
+@router.post(
+    "/{company_id}/documents/{document_id}/review",
+    response_model=ApiSuccess[VerificationDocumentPublic],
+)
+async def review_document(
+    document_id: uuid.UUID,
+    payload: DocumentReviewRequest,
+    db: DbSession,
+    company: CompanyOr404,
+    current_user: CurrentUser,
+    _admin: RequireAdmin,
+) -> ApiSuccess[VerificationDocumentPublic]:
+    """
+    Platform-admin-only. Deliberately does not depend on CurrentMembership
+    or require_company_role — a platform admin reviewing a document is
+    not expected to be a member of the company being reviewed at all.
+    The document is still resolved by (company_id, document_id) together
+    (document_service.get_document_or_none), so a reviewer cannot act on
+    a document belonging to a different company by mismatching the two
+    path params — the 404 below is IDOR-safe, matching every other
+    document endpoint in this file.
+    """
+    existing = await document_service.get_document_or_none(db, company.id, document_id)
+    if existing is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "DOCUMENT_NOT_FOUND", "message": "No such document on this company."},
+        )
+    try:
+        reviewed = await document_service.review_document(
+            db,
+            document=existing,
+            reviewer_id=current_user.id,
+            decision=payload.decision,
+            note=payload.note,
+        )
+    except document_service.DocumentNotPendingError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "DOCUMENT_NOT_PENDING",
+                "message": f"This document is already '{existing.status.value}' and cannot be reviewed again.",
+            },
+        ) from exc
+
+    event = "company_document_verified" if payload.decision == "approve" else "company_document_rejected"
+    await log_event(
+        db,
+        event,
+        user_id=str(current_user.id),
+        metadata={
+            "company_id": str(company.id),
+            "document_id": str(document_id),
+            "document_type": existing.document_type.value,
+            **({"review_note": payload.note} if payload.decision == "reject" else {}),
+        },
+    )
+    return success_response(VerificationDocumentPublic.model_validate(reviewed))
