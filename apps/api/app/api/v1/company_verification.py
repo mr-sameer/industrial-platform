@@ -31,12 +31,29 @@ documents, defeating the entire point of independent verification —
 see docs/adr/0029 decision #3's "future admin-review module" note. This
 is why the two dependency modules are imported and used side by side
 below rather than one being extended to cover both cases.
+
+Phase 2A addition — admin verification queue: `list_pending_documents`
+is the one route in this file that is NOT nested under
+`/{company_id}/...` — it spans every company (see
+document_service.list_documents_by_status). Registered as
+`GET /documents/pending` (-> `/companies/documents/pending`), placed
+before every `/{company_id}/...` route below to match this codebase's
+own established defensive convention for literal-vs-param path
+ambiguity (see app/api/v1/companies.py, where `/search` and
+`/slug/{slug}` are both registered ahead of `/{company_id}` for the
+same reason). Verified this cannot actually collide either way: for
+`GET /companies/documents/pending` to be swallowed by
+`/{company_id}/documents` (2 segments after /companies in both), the
+existing route's literal third segment would have to be "pending" —
+it's "documents" — so the two path shapes never overlap regardless of
+registration order. Also platform-Role.ADMIN-only, for the same reason
+review_document is.
 """
 
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 
 from app.core.company_authorization import CompanyOr404, CurrentMembership, require_company_role
 from app.core.config import get_settings
@@ -49,13 +66,15 @@ from app.models.company import Company
 from app.models.company_member import CompanyMember, CompanyRole
 from app.models.company_social_link import SocialPlatform
 from app.models.user import Role
-from app.models.verification_document import DocumentType
+from app.models.verification_document import DocumentStatus, DocumentType
 from app.schemas.company_verification import (
     BusinessInfoDetail,
     BusinessInfoUpdate,
     CompanyBrandingPublic,
     DocumentReviewRequest,
     MissingRequirementPublic,
+    PendingVerificationDocumentPage,
+    PendingVerificationDocumentPublic,
     SocialLinkPublic,
     SocialLinkUpsert,
     VerificationDocumentPublic,
@@ -92,6 +111,61 @@ async def _to_score_public(db: DbSession, company: Company) -> VerificationScore
             for m in score.missing_requirements
         ],
         satisfied_requirement_keys=score.satisfied_requirement_keys,
+    )
+
+
+# --------------------------------------------------------------------------
+# Admin verification queue (Phase 2A) — cross-company, platform-Role.ADMIN
+# only. Deliberately positioned before every /{company_id}/... route in
+# this file — see this file's module docstring for the route-matching
+# analysis (no actual collision either way, but matches the codebase's
+# own defensive literal-before-param convention).
+# --------------------------------------------------------------------------
+
+
+@router.get("/documents/pending", response_model=ApiSuccess[PendingVerificationDocumentPage])
+async def list_pending_documents(
+    db: DbSession,
+    _admin: RequireAdmin,
+    status_filter: Annotated[DocumentStatus, Query(alias="status")] = DocumentStatus.PENDING,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+) -> ApiSuccess[PendingVerificationDocumentPage]:
+    """
+    The admin verification queue's data endpoint — every document with
+    the given status (PENDING by default) across every company, oldest
+    first. See document_service.list_documents_by_status; each row is
+    built explicitly (not via model_validate) since company_name comes
+    from the joined Company, not a flat VerificationDocument attribute.
+    """
+    documents, total = await document_service.list_documents_by_status(
+        db, status=status_filter, page=page, page_size=page_size
+    )
+    return success_response(
+        PendingVerificationDocumentPage(
+            items=[
+                PendingVerificationDocumentPublic(
+                    id=d.id,
+                    document_type=d.document_type,
+                    file_type=d.file_type,
+                    file_url=d.file_url,
+                    status=d.status,
+                    uploaded_at=d.uploaded_at,
+                    verified_at=d.verified_at,
+                    review_note=d.review_note,
+                    expiry_date=d.expiry_date,
+                    version=d.version,
+                    is_expired=d.is_expired,
+                    company_id=d.company_id,
+                    company_name=d.company.name,
+                )
+                for d in documents
+            ],
+            total=total,
+            page=page,
+            page_size=page_size,
+            total_pages=document_service.total_pages(total, page_size),
+        )
     )
 
 

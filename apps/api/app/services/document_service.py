@@ -7,12 +7,14 @@ storage abstraction (app.core.storage) and file validation
 client-declared content types directly.
 """
 
+import math
 import uuid
 from datetime import UTC, date, datetime
 from typing import Literal
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.core.file_validation import scan_for_viruses, validate_document
 from app.core.storage import StorageBackend, make_object_key
@@ -216,3 +218,48 @@ async def review_document(
     await db.commit()
     await db.refresh(document)
     return document
+
+
+async def list_documents_by_status(
+    db: AsyncSession, *, status: DocumentStatus, page: int, page_size: int
+) -> tuple[list[VerificationDocument], int]:
+    """
+    Phase 2A — the admin verification queue's data source. Unlike every
+    other list/get function in this module, this one is deliberately
+    NOT scoped to a single company_id: it's the one place documents are
+    queried across every company at once, for a platform admin working
+    a review queue rather than a company's own Documents page. Same
+    count-then-page shape as provenance_service.list_conflicts /
+    list_provenance_for_entity.
+
+    `company` is eager-loaded (selectinload, one extra query, not N+1)
+    since the router needs each row's company_name for
+    PendingVerificationDocumentPublic — see that schema's docstring for
+    why this can't be a plain `model_validate(document)`.
+
+    Does not change list_documents (still company-scoped, unaffected)
+    or anything in verification_score_service — out of scope for this
+    phase.
+    """
+    query = select(VerificationDocument).where(
+        VerificationDocument.status == status,
+        VerificationDocument.is_deleted.is_(False),
+    )
+
+    count_result = await db.execute(select(func.count()).select_from(query.subquery()))
+    total = int(count_result.scalar_one())
+
+    query = (
+        query.options(selectinload(VerificationDocument.company))
+        .order_by(VerificationDocument.uploaded_at.asc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+    )
+    result = await db.execute(query)
+    return list(result.scalars().all()), total
+
+
+def total_pages(total: int, page_size: int) -> int:
+    """Matches the identical helper already duplicated per paginating service
+    module in this codebase (e.g. provenance_service.total_pages, company_service.total_pages)."""
+    return max(1, math.ceil(total / page_size))
