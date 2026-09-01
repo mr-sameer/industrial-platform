@@ -1,8 +1,8 @@
+import type { RequirementMatchCandidate } from "@platform/shared-types";
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
 import { RecommendationCard } from "@/components/consult/RecommendationCard";
-import type { RequirementMatchCandidate } from "@platform/shared-types";
 
 function buildMatch(overrides: Partial<RequirementMatchCandidate> = {}): RequirementMatchCandidate {
   return {
@@ -255,5 +255,28 @@ describe("RecommendationCard", () => {
   it("honestly states when no evidence exists at all for a product, rather than hiding the gap", () => {
     render(<RecommendationCard match={buildMatch({ evidence: [] })} />);
     expect(screen.getByText(/No cited evidence on file/)).toBeTruthy();
+  });
+
+  it("renders an explicit 'View company' action (P0 #4), not just an implicit clickable header", () => {
+    render(<RecommendationCard match={buildMatch()} />);
+    const link = screen.getByText("View company").closest("a");
+    expect(link).toBeTruthy();
+    expect(link?.getAttribute("href")).toContain("/company/abc-engineering");
+  });
+
+  it("carries this match's procurement/evidence data through the company link (P0 #3)", () => {
+    const match = buildMatch({
+      offering: { role: "manufacturer", verification_status: "unverified", moq: "1 Piece", lead_time: "2 Days", capacity: null },
+      evidence: [{ field_name: "moq", value_observed: "1 Piece", status: "observed", source_url: null }],
+    });
+    render(<RecommendationCard match={match} />);
+    const link = screen.getByText("View company").closest("a");
+    const href = link?.getAttribute("href") ?? "";
+    expect(href).toContain("/company/abc-engineering");
+    const query = new URLSearchParams(href.split("?")[1]);
+    const carried = JSON.parse(query.get("match")!);
+    expect(carried.moq).toBe("1 Piece");
+    expect(carried.leadTime).toBe("2 Days");
+    expect(carried.evidence).toHaveLength(1);
   });
 });

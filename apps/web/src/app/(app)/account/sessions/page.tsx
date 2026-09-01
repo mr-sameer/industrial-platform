@@ -3,7 +3,9 @@
 import type { ApiResponse, SessionPublic } from "@platform/shared-types";
 import { useCallback, useEffect, useState } from "react";
 
-
+import { Badge } from "@/components/ui/Badge";
+import { Button } from "@/components/ui/Button";
+import { PageLoading } from "@/components/ui/Spinner";
 import { useAuth } from "@/contexts/AuthContext";
 
 /**
@@ -44,48 +46,63 @@ export default function SessionsPage() {
     fetchSessions();
   }
 
-  if (status === "loading") return <main style={{ padding: "3rem" }}>Loading…</main>;
+  if (status === "loading") return <PageLoading />;
   if (status === "unauthenticated") {
     return (
-      <main style={{ padding: "3rem" }}>
-        Please <a href="/login?next=/account/sessions">log in</a> to view your sessions.
+      <main className="mx-auto max-w-4xl px-4 py-8 sm:px-6">
+        <p className="text-sm text-ink-muted">
+          Please{" "}
+          <a href="/login?next=/account/sessions" className="text-accent hover:text-accent-hover">
+            log in
+          </a>{" "}
+          to view your sessions.
+        </p>
       </main>
     );
   }
 
   return (
-    <main style={{ fontFamily: "ui-sans-serif, system-ui, sans-serif", padding: "3rem", maxWidth: 640 }}>
-      <h1>Active sessions</h1>
-      <p>These are the devices currently signed in to your account.</p>
-      {error && <p style={{ color: "#cf222e" }}>{error}</p>}
-      {sessions === null && !error && <p>Loading sessions…</p>}
-      {sessions && (
-        <table style={{ width: "100%", borderCollapse: "collapse", marginTop: "1rem" }}>
-          <tbody>
-            {sessions.map((s) => (
-              <tr key={s.id} style={{ borderBottom: "1px solid #ddd" }}>
-                <td style={{ padding: "0.75rem 0" }}>
-                  <strong>
+    <main className="mx-auto max-w-2xl px-4 py-8 sm:px-6">
+      <h1 className="font-display text-xl font-semibold text-ink">Active sessions</h1>
+      <p className="mt-1 text-sm text-ink-muted">These are the devices currently signed in to your account.</p>
+
+      {error && <p className="mt-4 text-sm text-danger">{error}</p>}
+      {sessions === null && !error && <p className="mt-4 text-sm text-ink-muted">Loading sessions…</p>}
+
+      {sessions && sessions.length > 0 && (
+        <div className="mt-6 flex flex-col gap-3">
+          {sessions.map((s) => (
+            <div
+              key={s.id}
+              className="flex items-center justify-between gap-3 rounded-lg border border-border bg-canvas p-4"
+            >
+              <div className="min-w-0">
+                <div className="flex items-center gap-2">
+                  <p className="truncate text-sm font-medium text-ink">
                     {s.device_name ?? s.browser ?? "Unknown device"}
-                    {s.is_current ? " (this device)" : ""}
-                  </strong>
-                  <div style={{ color: "#666", fontSize: "0.85rem" }}>
-                    {s.platform ?? "Unknown platform"} · {s.ip_address ?? "unknown IP"}
-                    <br />
-                    Last active {new Date(s.last_active_at).toLocaleString()}
-                  </div>
-                </td>
-                <td style={{ textAlign: "right" }}>
-                  {!s.is_current && <button onClick={() => revoke(s.id)}>Revoke</button>}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+                  </p>
+                  {s.is_current && <Badge variant="accent">This device</Badge>}
+                </div>
+                <p className="mt-1 text-xs text-ink-muted">
+                  {s.platform ?? "Unknown platform"} · {s.ip_address ?? "unknown IP"}
+                </p>
+                <p className="mt-0.5 text-xs text-ink-faint">
+                  Last active {new Date(s.last_active_at).toLocaleString()}
+                </p>
+              </div>
+              {!s.is_current && (
+                <Button type="button" variant="secondary" size="sm" onClick={() => revoke(s.id)}>
+                  Revoke
+                </Button>
+              )}
+            </div>
+          ))}
+        </div>
       )}
-      <button style={{ marginTop: "1.5rem" }} onClick={() => logoutAll()}>
+
+      <Button type="button" variant="danger" className="mt-6" onClick={() => logoutAll()}>
         Log out everywhere
-      </button>
+      </Button>
     </main>
   );
 }

@@ -86,3 +86,19 @@ export function badgeForVerification(status: "unverified" | "verified"): CSSProp
     color: status === "verified" ? "#1a7f37" : "#666",
   };
 }
+
+// Mirrors the Observed/Verified provenance badges already established in
+// components/consult/RecommendationCard.tsx — same rule, same two colors,
+// just as inline styles instead of Tailwind classes to match this
+// module's convention. A value is "Verified" only when the backend
+// itself reports status="verified"; everything else observed is
+// "Observed", never upgraded.
+export const badgeObserved: CSSProperties = { ...badge, background: "#eef2ff", color: "#3538cd" };
+export const badgeVerified: CSSProperties = { ...badge, background: "#e6f4ea", color: "#1a7f37" };
+
+export const evidenceCard: CSSProperties = {
+  ...card,
+  background: "#fafafa",
+};
+
+export const link: CSSProperties = { color: "#1a3c34", fontWeight: 500 };

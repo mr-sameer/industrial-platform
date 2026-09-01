@@ -8,6 +8,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/Button";
 import { Select } from "@/components/ui/Select";
+import { PageLoading } from "@/components/ui/Spinner";
 import { useRequireAuth } from "@/hooks/useRequireAuth";
 import { deleteDocument, listDocuments, replaceDocument, uploadDocument } from "@/lib/company-verification";
 
@@ -38,7 +39,7 @@ export default function DocumentsPage() {
     if (auth.status === "authenticated") fetchDocuments();
   }, [auth.status, fetchDocuments]);
 
-  if (auth.status === "loading") return <main className="p-8 text-sm text-ink-muted">Loading…</main>;
+  if (auth.status === "loading") return <PageLoading />;
   if (auth.status === "unauthenticated") return null;
 
   async function handleUpload() {

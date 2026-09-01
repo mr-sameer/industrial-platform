@@ -8,6 +8,7 @@ import { useState, type FormEvent } from "react";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
+import { PageLoading } from "@/components/ui/Spinner";
 import { Textarea } from "@/components/ui/Textarea";
 import { useRequireAuth } from "@/hooks/useRequireAuth";
 import { createCompany } from "@/lib/companies";
@@ -38,7 +39,7 @@ export default function CreateCompanyPage() {
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
-  if (auth.status === "loading") return <main className="p-8 text-sm text-ink-muted">Loading…</main>;
+  if (auth.status === "loading") return <PageLoading />;
   if (auth.status === "unauthenticated") return null;
 
   // ForgeX Product Audit P1: this requirement was previously only
