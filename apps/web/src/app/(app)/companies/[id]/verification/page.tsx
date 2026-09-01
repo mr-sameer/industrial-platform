@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 
+import { PageLoading } from "@/components/ui/Spinner";
 import { VerificationProgress } from "@/components/VerificationProgress";
 import { useRequireAuth } from "@/hooks/useRequireAuth";
 import { getVerification } from "@/lib/company-verification";
@@ -33,7 +34,7 @@ export default function VerificationDashboardPage() {
     if (auth.status === "authenticated") fetchScore();
   }, [auth.status, fetchScore]);
 
-  if (auth.status === "loading" || loading) return <main className="p-8 text-sm text-ink-muted">Loading…</main>;
+  if (auth.status === "loading" || loading) return <PageLoading />;
   if (auth.status === "unauthenticated") return null;
 
   return (

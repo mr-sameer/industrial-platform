@@ -7,6 +7,7 @@ import { useCallback, useEffect, useState, type FormEvent } from "react";
 
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
+import { PageLoading } from "@/components/ui/Spinner";
 import { Textarea } from "@/components/ui/Textarea";
 import { useRequireAuth } from "@/hooks/useRequireAuth";
 import { deleteCompany, getCompany, updateCompany } from "@/lib/companies";
@@ -58,7 +59,7 @@ export default function CompanySettingsPage() {
     if (auth.status === "authenticated") fetchCompany();
   }, [auth.status, fetchCompany]);
 
-  if (auth.status === "loading") return <main className="p-8 text-sm text-ink-muted">Loading…</main>;
+  if (auth.status === "loading") return <PageLoading />;
   if (auth.status === "unauthenticated") return null;
   if (loadError) {
     return (
@@ -67,7 +68,7 @@ export default function CompanySettingsPage() {
       </main>
     );
   }
-  if (!company) return <main className="p-8 text-sm text-ink-muted">Loading…</main>;
+  if (!company) return <PageLoading />;
 
   const canEdit = company.my_role === "owner" || company.my_role === "admin" || company.my_role === "editor";
   const canDelete = company.my_role === "owner";

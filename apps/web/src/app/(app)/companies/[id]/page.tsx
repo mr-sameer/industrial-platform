@@ -7,6 +7,7 @@ import { useCallback, useEffect, useState } from "react";
 
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
+import { PageLoading } from "@/components/ui/Spinner";
 import { useRequireAuth } from "@/hooks/useRequireAuth";
 import { getCompany } from "@/lib/companies";
 
@@ -38,7 +39,7 @@ export default function CompanyDashboardPage() {
     if (auth.status === "authenticated") fetchCompany();
   }, [auth.status, fetchCompany]);
 
-  if (auth.status === "loading" || loading) return <main className="p-8 text-sm text-ink-muted">Loading…</main>;
+  if (auth.status === "loading" || loading) return <PageLoading />;
   if (auth.status === "unauthenticated") return null;
 
   if (error) {
