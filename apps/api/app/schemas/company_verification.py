@@ -1,7 +1,9 @@
-"""Pydantic schemas — Module 3B (Company Verification & Industrial Identity)."""
+"""Pydantic schemas — Module 3B (Company Verification & Industrial Identity),
+extended in Phase 1 of the admin document-verification review workflow."""
 
 import uuid
 from datetime import date, datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field, HttpUrl
 
@@ -103,11 +105,26 @@ class VerificationDocumentPublic(BaseModel):
     status: DocumentStatus
     uploaded_at: datetime
     verified_at: datetime | None
+    # The reviewer's rejection reason (None on approval or before review)
+    # — see document_service.review_document. Deliberately no
+    # `verified_by` here: this is a public-facing shape (the company's
+    # own Documents page), and exposing which platform admin reviewed a
+    # document isn't needed by any consumer today — see who set it via
+    # the DB column directly if that's ever needed.
+    review_note: str | None
     expiry_date: date | None
     version: int
     is_expired: bool
 
     model_config = {"from_attributes": True}
+
+
+class DocumentReviewRequest(BaseModel):
+    """POST body for /companies/{id}/documents/{document_id}/review — platform-admin-only, see
+    app.core.dependencies.require_role(Role.ADMIN) at the router layer, never CompanyRole."""
+
+    decision: Literal["approve", "reject"]
+    note: str | None = Field(default=None, max_length=2000)
 
 
 class MissingRequirementPublic(BaseModel):
