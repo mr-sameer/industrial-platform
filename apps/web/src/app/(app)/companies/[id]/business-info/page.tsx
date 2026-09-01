@@ -9,6 +9,7 @@ import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
+import { PageLoading } from "@/components/ui/Spinner";
 import { Textarea } from "@/components/ui/Textarea";
 import { useRequireAuth } from "@/hooks/useRequireAuth";
 import { getCompany } from "@/lib/companies";
@@ -66,7 +67,7 @@ export default function BusinessInfoPage() {
     if (auth.status === "authenticated") fetchCompany();
   }, [auth.status, fetchCompany]);
 
-  if (auth.status === "loading" || !loaded) return <main className="p-8 text-sm text-ink-muted">Loading…</main>;
+  if (auth.status === "loading" || !loaded) return <PageLoading />;
   if (auth.status === "unauthenticated") return null;
   if (loadError) {
     return (

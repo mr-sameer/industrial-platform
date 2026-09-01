@@ -7,6 +7,7 @@ import { useParams } from "next/navigation";
 import { useEffect, useState } from "react";
 
 import { Badge } from "@/components/ui/Badge";
+import { PageLoading } from "@/components/ui/Spinner";
 import { useRequireAuth } from "@/hooks/useRequireAuth";
 import { getProduct, getProductOfferings } from "@/lib/products";
 
@@ -39,10 +40,10 @@ export default function ProductDetailPage() {
     });
   }, [auth.status, params.id]);
 
-  if (auth.status === "loading") return <main className="p-8 text-sm text-ink-muted">Loading…</main>;
+  if (auth.status === "loading") return <PageLoading />;
   if (auth.status === "unauthenticated") return null;
   if (error) return <main className="p-8 text-sm text-danger">{error}</main>;
-  if (product === null) return <main className="p-8 text-sm text-ink-muted">Loading…</main>;
+  if (product === null) return <PageLoading />;
 
   return (
     <main className="mx-auto max-w-4xl px-4 py-8 sm:px-6">

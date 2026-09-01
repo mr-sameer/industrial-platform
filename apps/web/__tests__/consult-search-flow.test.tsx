@@ -76,6 +76,13 @@ describe("Consult search flow (Module 7A-1/7A-2 integration)", () => {
   });
 
   beforeEach(() => {
+    // sessionStorage persists across tests within a jsdom file (unlike
+    // the rendered DOM, which testing-library auto-cleans) — without
+    // this, the "prompts login instead of calling the backend" test
+    // below writes a pending-search entry (P0 #1's auth_required save,
+    // see app/consult/page.tsx) that a later authenticated test would
+    // then silently restore, skipping its own greeting phase.
+    sessionStorage.clear();
     authState.status = "authenticated";
     authState.accessToken = "token-abc";
     vi.mocked(listCategories).mockResolvedValue({

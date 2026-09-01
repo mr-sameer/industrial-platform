@@ -6,6 +6,7 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 
 import { Badge } from "@/components/ui/Badge";
+import { PageLoading } from "@/components/ui/Spinner";
 import { useRequireAuth } from "@/hooks/useRequireAuth";
 import { searchProducts } from "@/lib/products";
 
@@ -36,7 +37,7 @@ export default function ProductsListPage() {
     });
   }, [auth.status]);
 
-  if (auth.status === "loading") return <main className="p-8 text-sm text-ink-muted">Loading…</main>;
+  if (auth.status === "loading") return <PageLoading />;
   if (auth.status === "unauthenticated") return null;
 
   return (

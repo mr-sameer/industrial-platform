@@ -8,8 +8,8 @@ import { logger } from "@/lib/logger";
  * means auth headers (Module 2), retries, and tracing can be added in one
  * place later without touching call sites.
  */
-export async function apiFetch<T>(path: string, init?: RequestInit): Promise<ApiResponse<T>> {
-  const url = `${env.apiBaseUrl}${path}`;
+export async function apiFetch<T>(path: string, init?: RequestInit, baseUrl: string = env.apiBaseUrl): Promise<ApiResponse<T>> {
+  const url = `${baseUrl}${path}`;
   try {
     const res = await fetch(url, {
       ...init,

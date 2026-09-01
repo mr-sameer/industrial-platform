@@ -7,6 +7,7 @@ import { useCallback, useEffect, useState } from "react";
 
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
+import { PageLoading } from "@/components/ui/Spinner";
 import { useRequireAuth } from "@/hooks/useRequireAuth";
 import { deleteSocialLink, listSocialLinks, upsertSocialLink } from "@/lib/company-verification";
 
@@ -43,7 +44,7 @@ export default function SocialLinksPage() {
     if (auth.status === "authenticated") fetchLinks();
   }, [auth.status, fetchLinks]);
 
-  if (auth.status === "loading") return <main className="p-8 text-sm text-ink-muted">Loading…</main>;
+  if (auth.status === "loading") return <PageLoading />;
   if (auth.status === "unauthenticated") return null;
 
   async function handleSave(platform: SocialPlatform) {

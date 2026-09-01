@@ -1,8 +1,10 @@
-import { Building2, CheckCircle2, ExternalLink, HelpCircle, ShieldCheck, XCircle } from "lucide-react";
-import Link from "next/link";
-
 import { VERIFICATION_LEVEL_LABELS, type VerificationLevel } from "@platform/shared-types";
 import type { RequirementMatchCandidate, RequirementMatchEvidenceItem } from "@platform/shared-types";
+import { ArrowRight, Building2, CheckCircle2, ExternalLink, HelpCircle, ShieldCheck, XCircle } from "lucide-react";
+import Link from "next/link";
+
+
+import { encodeMatchContext } from "@/lib/company-match-context";
 
 const LEVEL_COLOR: Record<string, string> = {
   unverified: "text-level-unverified",
@@ -148,10 +150,14 @@ function SignalPoints({ label, earned, possible }: { label: string; earned: numb
 export function RecommendationCard({ match }: { match: RequirementMatchCandidate }) {
   const { company, product, score, signals, score_breakdown, offering, evidence } = match;
   const levelLabel = verificationLevelLabel(company.verification_level);
+  // P0 #3 (Buyer UX Audit): carries this card's own procurement/evidence
+  // data through to the company profile, which has no requirement/offering
+  // context of its own — see lib/company-match-context.ts's docstring.
+  const companyHref = { pathname: `/company/${company.slug}`, query: { match: encodeMatchContext(match) } };
 
   return (
     <div className="rounded-xl border border-border bg-canvas p-5">
-      <Link href={`/company/${company.slug}`} className="block transition-colors hover:opacity-90">
+      <Link href={companyHref} className="block transition-colors hover:opacity-90">
         <div className="flex items-start gap-3.5">
           <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-accent-subtle text-accent">
             <Building2 size={20} aria-hidden />
@@ -285,6 +291,18 @@ export function RecommendationCard({ match }: { match: RequirementMatchCandidate
           No cited evidence on file for this product yet.
         </p>
       )}
+
+      {/* P0 #4 (Buyer UX Audit): the header above is also a link, but that
+          affordance wasn't visually obvious — this makes "what to do next
+          with this match" explicit instead of relying on the whole card
+          reading as clickable. */}
+      <Link
+        href={companyHref}
+        className="mt-3 flex items-center justify-end gap-1 border-t border-border pt-3 text-xs font-medium text-accent hover:text-accent-hover"
+      >
+        View company
+        <ArrowRight size={12} aria-hidden />
+      </Link>
     </div>
   );
 }

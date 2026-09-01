@@ -1,13 +1,19 @@
 "use client";
 
-import { Building2, LayoutDashboard, Search as SearchIcon } from "lucide-react";
+import { Building2, LayoutDashboard, Search as SearchIcon, Sparkles } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import type { ReactNode } from "react";
 
 import { cn } from "@/lib/cn";
 
+// P0 #5 (Buyer UX Audit): Consult is the core buyer workflow, but nothing
+// in the authenticated shell pointed back to it — a buyer who registers
+// or logs in lands on Dashboard/Companies/Search with no way back except
+// re-typing the URL. Listed first since it's the primary entry point, not
+// a peer of the other three.
 const NAV_ITEMS = [
+  { href: "/consult", label: "Ask ForgeX", icon: Sparkles },
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/companies", label: "Companies", icon: Building2 },
   { href: "/companies/search", label: "Search", icon: SearchIcon },

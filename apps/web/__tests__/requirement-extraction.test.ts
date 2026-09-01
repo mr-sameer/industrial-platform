@@ -225,4 +225,58 @@ describe("extractFromText — structured field extraction", () => {
       expect(req.budget.value).toBeNull(); // never stated — must stay an honest Unknown
     });
   });
+
+  /**
+   * Regression coverage for the ForgeX Product Audit's P0 #2: a
+   * quantity stated the way a real buyer actually opens a sourcing
+   * message — "I need <number> <product>" / "Need <number> <product>",
+   * the exact shape of the homepage's own rotating placeholder ("Need
+   * 5,000 hydraulic cylinders") — fell through to Unknown because the
+   * only two recognized shapes were "<number> units/pieces/pcs" and
+   * "quantity/qty <number>", neither of which matches a number directly
+   * followed by the product name itself.
+   */
+  describe("quantity stated as '<opening phrase> <number> <product>' (ForgeX Product Audit P0 #2)", () => {
+    it("extracts the quantity from the audit's exact reported sentence ('I need 2000 stainless steel ball valves...')", () => {
+      const req = extractFromText(
+        newRequirementObject("x"),
+        "I need 2000 stainless steel ball valves for a water treatment plant",
+        true
+      );
+      expect(req.quantity).toEqual({ value: "2000", confidence: "explicit" });
+    });
+
+    it("extracts the quantity from the audit's second reported sentence ('I need 500 room heaters...')", () => {
+      const req = extractFromText(
+        newRequirementObject("x"),
+        "I need 500 room heaters for a hotel chain, ISO certified, within 45 days",
+        true
+      );
+      expect(req.quantity).toEqual({ value: "500", confidence: "explicit" });
+    });
+
+    it("extracts the quantity from the homepage's own rotating placeholder example ('Need 5,000 hydraulic cylinders')", () => {
+      const req = extractFromText(newRequirementObject("x"), "Need 5,000 hydraulic cylinders", true);
+      expect(req.quantity).toEqual({ value: "5,000", confidence: "explicit" });
+    });
+
+    it("keeps productOrCategory clean of the opening-phrase quantity — no leaked number or leading filler", () => {
+      const req = extractFromText(
+        newRequirementObject("x"),
+        "I need 2000 stainless steel ball valves for a water treatment plant",
+        true
+      );
+      expect(req.productOrCategory.value).not.toMatch(/\d/);
+      expect(req.productOrCategory.value).toContain("stainless steel ball valves");
+    });
+
+    it("does not fire when the opening phrase isn't immediately followed by a number — no false positive", () => {
+      const req = extractFromText(newRequirementObject("x"), "I need a manufacturer for 500 units", true);
+      // The number here is captured correctly by the pre-existing
+      // "<number> units" rule, not the new opening-phrase rule — this
+      // just confirms the new pattern doesn't change this pre-existing,
+      // already-correct outcome.
+      expect(req.quantity).toEqual({ value: "500", confidence: "explicit" });
+    });
+  });
 });
