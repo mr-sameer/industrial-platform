@@ -158,34 +158,66 @@ function numberTokenToDigits(token: string): string {
 // exchange-rate-aware parser.
 const CURRENCY_PATTERN = "(?:USD|INR|EUR|GBP|Rs\\.?|₹|\\$|€)";
 
-// Two independent, additive shapes for the same field — a bare
-// "<number> <unit word>" (the original rule) and a "<label> <number>"
+// Referenced by QUANTITY_OPENING_PATTERN below as well as the
+// productOrCategory remainder-stripping logic further down this file —
+// declared here (rather than only where it's used later) so both can
+// share the one list instead of drifting apart.
+const FILLER_PREFIXES = [
+  "i need",
+  "i want",
+  "need",
+  "looking for",
+  "i'm looking for",
+  "im looking for",
+  "find",
+  "find me",
+  "source",
+  "sourcing",
+];
+
+// Three independent, additive shapes for the same field — a bare
+// "<number> <unit word>" (the original rule), a "<label> <number>"
 // shape ("quantity 500", "qty: 500") a buyer stating several fields in
-// one sentence tends to use instead. Both stay strict/adjacent, never a
-// bare unlabeled number anywhere in the sentence — that would risk
-// grabbing an unrelated digit (a budget, a year, a phone number) as a
-// quantity, which is exactly the false-positive risk this file's own
-// docstring above warns against.
+// one sentence tends to use instead, and a number sitting directly
+// after the sentence's own opening phrase ("I need 500 room heaters",
+// "Need 5,000 hydraulic cylinders" — the platform's own homepage
+// example). All three stay strict/adjacent, never a bare unlabeled
+// number anywhere in the sentence — that would risk grabbing an
+// unrelated digit (a budget, a year, a phone number) as a quantity,
+// which is exactly the false-positive risk this file's own docstring
+// above warns against. QUANTITY_OPENING_PATTERN in particular only
+// fires when the number is the very first thing after a recognized
+// opening phrase, so "I need a manufacturer ... a few hundred pieces"
+// (the number nowhere near the opening) still correctly falls through
+// to missing rather than grabbing the wrong digit.
 const QUANTITY_UNIT_PATTERN = new RegExp(`\\b(${NUMBER_WORD_PATTERN})\\s+(?:units?|pieces?|pcs?)\\b`, "i");
 const QUANTITY_LABEL_PATTERN = new RegExp(`\\b(?:quantity|qty)\\s*(?:of|is|:)?\\s*(${NUMBER_WORD_PATTERN})\\b`, "i");
+const QUANTITY_OPENING_PATTERN = new RegExp(
+  `^(?:${FILLER_PREFIXES.join("|")})\\s+(${NUMBER_WORD_PATTERN})\\b`,
+  "i"
+);
 // ForgeX Product Audit P0: covers a number sitting right after the verb
 // that actually names the sourcing action ("who can produce 5,000 X",
 // "can manufacture 500 X") rather than right after the sentence's own
 // opening phrase — a real buyer sentence with a relative clause between
 // the opening and the number ("I need a manufacturer near Delhi who can
-// produce 5,000 X") previously matched neither of the two patterns
-// above, so the quantity fell through to Unknown *and* the "5,000" was
-// never stripped out of productOrCategory's remainder either, since
-// that strip is itself gated on a quantity having been found.
-// Deliberately a short, specific verb list (same "adjacent, never a
-// bare number" discipline as every other pattern in this file) — not a
-// general "any verb near a number" rule, which would risk the same
-// false-positive a bare-number rule elsewhere in this file already
-// guards against.
+// produce 5,000 X") previously matched none of the three patterns above,
+// so the quantity fell through to Unknown *and* the "5,000" was never
+// stripped out of productOrCategory's remainder either, since that strip
+// is itself gated on a quantity having been found. Deliberately a short,
+// specific verb list (same "adjacent, never a bare number" discipline as
+// every other pattern in this file) — not a general "any verb near a
+// number" rule, which would risk the same false-positive a bare-number
+// rule elsewhere in this file already guards against.
 const QUANTITY_VERB_PATTERN = new RegExp(
   `\\b(?:produce|manufacture|supply|deliver|provide|make)\\s+(${NUMBER_WORD_PATTERN})\\b`,
   "i"
 );
+// Mirrors QUANTITY_OPENING_PATTERN for the productOrCategory remainder
+// (see below): by the time that code runs, the opening filler phrase
+// itself has already been stripped off the front of the remainder, so
+// what's left to strip is just the bare number sitting at the new start.
+const QUANTITY_OPENING_STRIP_PATTERN = new RegExp(`^(?:${NUMBER_WORD_PATTERN})\\s+`, "i");
 
 // "months"/"years" added alongside the original days/weeks/hours — a
 // real buyer's timeline is at least as likely to be stated in months as
@@ -209,7 +241,10 @@ const BUDGET_PATTERN = new RegExp(
 
 function matchQuantity(text: string): RegExpMatchArray | null {
   return (
-    text.match(QUANTITY_UNIT_PATTERN) ?? text.match(QUANTITY_LABEL_PATTERN) ?? text.match(QUANTITY_VERB_PATTERN)
+    text.match(QUANTITY_UNIT_PATTERN) ??
+    text.match(QUANTITY_LABEL_PATTERN) ??
+    text.match(QUANTITY_OPENING_PATTERN) ??
+    text.match(QUANTITY_VERB_PATTERN)
   );
 }
 
@@ -269,19 +304,6 @@ export function newRequirementObject(rawQuery: string): RequirementObject {
     overallConfidence: 0,
   };
 }
-
-const FILLER_PREFIXES = [
-  "i need",
-  "i want",
-  "need",
-  "looking for",
-  "i'm looking for",
-  "im looking for",
-  "find",
-  "find me",
-  "source",
-  "sourcing",
-];
 
 /**
  * Deterministic, keyword-based extraction from free text — not NLP, not
@@ -430,13 +452,19 @@ export function extractFromText(
       remainder = remainder
         .replace(new RegExp(QUANTITY_UNIT_PATTERN, "gi"), "")
         .replace(new RegExp(QUANTITY_LABEL_PATTERN, "gi"), "")
+        // The opening filler phrase itself was already stripped off the
+        // front of `remainder` above, so a quantity captured via
+        // QUANTITY_OPENING_PATTERN now shows up as a bare number at the
+        // new start of `remainder` ("500 stainless steel ball valves…") —
+        // strip just that.
+        .replace(QUANTITY_OPENING_STRIP_PATTERN, "")
         .trim();
       if (quantityRawToken) {
-        // The verb half of QUANTITY_VERB_PATTERN ("produce", "manufacture"…)
+        // QUANTITY_VERB_PATTERN's own verb half ("produce", "manufacture"…)
         // is also a ROLE_KEYWORDS entry, already stripped above — leaving
         // just the bare number sitting mid-sentence ("who can  5,000
-        // stainless-steel…"). Neither pattern above matches that shape, so
-        // strip the literal matched token directly.
+        // stainless-steel…"). None of the three patterns above match that
+        // shape, so strip the literal matched token directly.
         remainder = remainder.replace(new RegExp(`\\b${quantityRawToken}\\b`, "i"), "").trim();
       }
     }
