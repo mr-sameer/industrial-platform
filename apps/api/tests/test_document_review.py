@@ -73,7 +73,9 @@ PENDING_QUEUE_URL = "/api/v1/companies/documents/pending"
 
 @pytest.mark.asyncio
 async def test_platform_admin_can_approve_pending_document(client):
-    owner, company = await _create_verified_owner_company(client, "review-approve-owner@example.com")
+    owner, company = await _create_verified_owner_company(
+        client, "review-approve-owner@example.com"
+    )
     document = await _upload_pending_document(client, owner, company)
     admin = await _register_admin(client, "review-approve-admin@example.com")
 
@@ -109,7 +111,9 @@ async def test_platform_admin_can_reject_pending_document(client):
 async def test_approval_ignores_a_supplied_note(client):
     """APPROVE always clears review_note to None, even if a client sends one —
     matching document_service.review_document's documented behavior exactly."""
-    owner, company = await _create_verified_owner_company(client, "review-approve-note-owner@example.com")
+    owner, company = await _create_verified_owner_company(
+        client, "review-approve-note-owner@example.com"
+    )
     document = await _upload_pending_document(client, owner, company)
     admin = await _register_admin(client, "review-approve-note-admin@example.com")
 
@@ -151,7 +155,9 @@ async def test_verified_by_and_verified_at_are_set_on_review(client):
 
 @pytest.mark.asyncio
 async def test_already_verified_document_cannot_be_reviewed_again(client):
-    owner, company = await _create_verified_owner_company(client, "review-reverify-owner@example.com")
+    owner, company = await _create_verified_owner_company(
+        client, "review-reverify-owner@example.com"
+    )
     document = await _upload_pending_document(client, owner, company)
     admin = await _register_admin(client, "review-reverify-admin@example.com")
 
@@ -173,7 +179,9 @@ async def test_already_verified_document_cannot_be_reviewed_again(client):
 
 @pytest.mark.asyncio
 async def test_already_rejected_document_cannot_be_reviewed_again(client):
-    owner, company = await _create_verified_owner_company(client, "review-rereject-owner@example.com")
+    owner, company = await _create_verified_owner_company(
+        client, "review-rereject-owner@example.com"
+    )
     document = await _upload_pending_document(client, owner, company)
     admin = await _register_admin(client, "review-rereject-admin@example.com")
 
@@ -195,7 +203,9 @@ async def test_already_rejected_document_cannot_be_reviewed_again(client):
 
 @pytest.mark.asyncio
 async def test_expired_document_cannot_be_reviewed(client):
-    owner, company = await _create_verified_owner_company(client, "review-expired-owner@example.com")
+    owner, company = await _create_verified_owner_company(
+        client, "review-expired-owner@example.com"
+    )
     document = await _upload_pending_document(client, owner, company)
     admin = await _register_admin(client, "review-expired-admin@example.com")
 
@@ -240,7 +250,9 @@ async def test_company_owner_cannot_review_document(client):
 
 @pytest.mark.asyncio
 async def test_company_admin_cannot_review_document(client):
-    owner, company = await _create_verified_owner_company(client, "review-companyadmin-owner@example.com")
+    owner, company = await _create_verified_owner_company(
+        client, "review-companyadmin-owner@example.com"
+    )
     document = await _upload_pending_document(client, owner, company)
     company_admin = await _add_member_with_role(
         client, owner, company, "review-companyadmin-member@example.com", "admin"
@@ -288,7 +300,9 @@ async def test_company_viewer_cannot_review_document(client):
 
 @pytest.mark.asyncio
 async def test_outsider_cannot_review_document(client):
-    owner, company = await _create_verified_owner_company(client, "review-outsider-owner@example.com")
+    owner, company = await _create_verified_owner_company(
+        client, "review-outsider-owner@example.com"
+    )
     document = await _upload_pending_document(client, owner, company)
     outsider = await _register_verified(client, "review-outsider@example.com")
 
@@ -307,7 +321,9 @@ async def test_outsider_cannot_review_document(client):
 
 @pytest.mark.asyncio
 async def test_document_cannot_be_reviewed_via_a_different_companys_id(client):
-    owner_a, company_a = await _create_verified_owner_company(client, "review-idor-a-owner@example.com")
+    owner_a, company_a = await _create_verified_owner_company(
+        client, "review-idor-a-owner@example.com"
+    )
     document_a = await _upload_pending_document(client, owner_a, company_a)
     owner_b, company_b = await _create_verified_owner_company(
         client, "review-idor-b-owner@example.com", name="Other Industrial Co"
@@ -341,7 +357,9 @@ async def test_document_cannot_be_reviewed_via_a_different_companys_id(client):
 
 @pytest.mark.asyncio
 async def test_audit_event_emitted_for_approval(client):
-    owner, company = await _create_verified_owner_company(client, "review-audit-approve-owner@example.com")
+    owner, company = await _create_verified_owner_company(
+        client, "review-audit-approve-owner@example.com"
+    )
     document = await _upload_pending_document(client, owner, company)
     admin = await _register_admin(client, "review-audit-approve-admin@example.com")
 
@@ -357,7 +375,11 @@ async def test_audit_event_emitted_for_approval(client):
             select(AuditLog).where(AuditLog.event == "company_document_verified")
         )
         entries = result.scalars().all()
-        matching = [e for e in entries if e.event_metadata and e.event_metadata.get("document_id") == document["id"]]
+        matching = [
+            e
+            for e in entries
+            if e.event_metadata and e.event_metadata.get("document_id") == document["id"]
+        ]
         assert len(matching) == 1
         assert str(matching[0].user_id) == admin["user"]["id"]
         assert matching[0].event_metadata["company_id"] == company["id"]
@@ -365,7 +387,9 @@ async def test_audit_event_emitted_for_approval(client):
 
 @pytest.mark.asyncio
 async def test_audit_event_emitted_for_rejection(client):
-    owner, company = await _create_verified_owner_company(client, "review-audit-reject-owner@example.com")
+    owner, company = await _create_verified_owner_company(
+        client, "review-audit-reject-owner@example.com"
+    )
     document = await _upload_pending_document(client, owner, company)
     admin = await _register_admin(client, "review-audit-reject-admin@example.com")
 
@@ -381,7 +405,11 @@ async def test_audit_event_emitted_for_rejection(client):
             select(AuditLog).where(AuditLog.event == "company_document_rejected")
         )
         entries = result.scalars().all()
-        matching = [e for e in entries if e.event_metadata and e.event_metadata.get("document_id") == document["id"]]
+        matching = [
+            e
+            for e in entries
+            if e.event_metadata and e.event_metadata.get("document_id") == document["id"]
+        ]
         assert len(matching) == 1
         assert str(matching[0].user_id) == admin["user"]["id"]
         assert matching[0].event_metadata["review_note"] == "Wrong document type uploaded."
@@ -408,8 +436,12 @@ async def test_pending_queue_is_empty_when_no_documents_exist(client):
 
 @pytest.mark.asyncio
 async def test_pending_queue_returns_one_pending_document_with_full_fields(client):
-    owner, company = await _create_verified_owner_company(client, "queue-one-owner@example.com", name="Queue One Co")
-    document = await _upload_pending_document(client, owner, company, document_type="gst_certificate")
+    owner, company = await _create_verified_owner_company(
+        client, "queue-one-owner@example.com", name="Queue One Co"
+    )
+    document = await _upload_pending_document(
+        client, owner, company, document_type="gst_certificate"
+    )
     admin = await _register_admin(client, "queue-one-admin@example.com")
 
     response = await client.get(PENDING_QUEUE_URL, headers=_auth_headers(admin))
@@ -461,7 +493,9 @@ async def test_pending_queue_pagination(client):
         doc = await _upload_pending_document(client, owner, company, document_type="iso")
         uploaded_ids.append(doc["id"])
 
-    page1 = await client.get(f"{PENDING_QUEUE_URL}?page=1&page_size=2", headers=_auth_headers(admin))
+    page1 = await client.get(
+        f"{PENDING_QUEUE_URL}?page=1&page_size=2", headers=_auth_headers(admin)
+    )
     assert page1.status_code == 200
     body1 = page1.json()["data"]
     assert len(body1["items"]) == 2
@@ -471,7 +505,9 @@ async def test_pending_queue_pagination(client):
     assert body1["total_pages"] == 2
     assert [i["id"] for i in body1["items"]] == uploaded_ids[:2]
 
-    page2 = await client.get(f"{PENDING_QUEUE_URL}?page=2&page_size=2", headers=_auth_headers(admin))
+    page2 = await client.get(
+        f"{PENDING_QUEUE_URL}?page=2&page_size=2", headers=_auth_headers(admin)
+    )
     assert page2.status_code == 200
     body2 = page2.json()["data"]
     assert len(body2["items"]) == 1
@@ -504,14 +540,20 @@ async def test_pending_queue_status_filter_defaults_to_pending(client):
     default_ids = {i["id"] for i in default_response.json()["data"]["items"]}
     assert default_ids == {pending_doc["id"]}
 
-    verified_response = await client.get(f"{PENDING_QUEUE_URL}?status=verified", headers=_auth_headers(admin))
+    verified_response = await client.get(
+        f"{PENDING_QUEUE_URL}?status=verified", headers=_auth_headers(admin)
+    )
     verified_ids = {i["id"] for i in verified_response.json()["data"]["items"]}
     assert verified_ids == {verified_doc["id"]}
 
-    rejected_response = await client.get(f"{PENDING_QUEUE_URL}?status=rejected", headers=_auth_headers(admin))
+    rejected_response = await client.get(
+        f"{PENDING_QUEUE_URL}?status=rejected", headers=_auth_headers(admin)
+    )
     rejected_ids = {i["id"] for i in rejected_response.json()["data"]["items"]}
     assert rejected_ids == {rejected_doc["id"]}
-    rejected_item = next(i for i in rejected_response.json()["data"]["items"] if i["id"] == rejected_doc["id"])
+    rejected_item = next(
+        i for i in rejected_response.json()["data"]["items"] if i["id"] == rejected_doc["id"]
+    )
     assert rejected_item["review_note"] == "Not legible."
 
 
@@ -522,7 +564,8 @@ async def test_pending_queue_excludes_soft_deleted_documents(client):
     admin = await _register_admin(client, "queue-deleted-admin@example.com")
 
     delete_response = await client.delete(
-        f"/api/v1/companies/{company['id']}/documents/{document['id']}", headers=_auth_headers(owner)
+        f"/api/v1/companies/{company['id']}/documents/{document['id']}",
+        headers=_auth_headers(owner),
     )
     assert delete_response.status_code == 204
 
@@ -564,14 +607,18 @@ async def test_platform_admin_can_list_pending_queue(client):
 
 @pytest.mark.asyncio
 async def test_company_owner_cannot_list_pending_queue(client):
-    owner, _company = await _create_verified_owner_company(client, "queue-auth-owner-denied@example.com")
+    owner, _company = await _create_verified_owner_company(
+        client, "queue-auth-owner-denied@example.com"
+    )
     response = await client.get(PENDING_QUEUE_URL, headers=_auth_headers(owner))
     assert response.status_code == 403
 
 
 @pytest.mark.asyncio
 async def test_company_admin_cannot_list_pending_queue(client):
-    owner, company = await _create_verified_owner_company(client, "queue-auth-companyadmin-owner@example.com")
+    owner, company = await _create_verified_owner_company(
+        client, "queue-auth-companyadmin-owner@example.com"
+    )
     company_admin = await _add_member_with_role(
         client, owner, company, "queue-auth-companyadmin-member@example.com", "admin"
     )
@@ -581,7 +628,9 @@ async def test_company_admin_cannot_list_pending_queue(client):
 
 @pytest.mark.asyncio
 async def test_company_editor_cannot_list_pending_queue(client):
-    owner, company = await _create_verified_owner_company(client, "queue-auth-editor-owner@example.com")
+    owner, company = await _create_verified_owner_company(
+        client, "queue-auth-editor-owner@example.com"
+    )
     editor = await _add_member_with_role(
         client, owner, company, "queue-auth-editor-member@example.com", "editor"
     )
@@ -591,7 +640,9 @@ async def test_company_editor_cannot_list_pending_queue(client):
 
 @pytest.mark.asyncio
 async def test_company_viewer_cannot_list_pending_queue(client):
-    owner, company = await _create_verified_owner_company(client, "queue-auth-viewer-owner@example.com")
+    owner, company = await _create_verified_owner_company(
+        client, "queue-auth-viewer-owner@example.com"
+    )
     viewer = await _add_member_with_role(
         client, owner, company, "queue-auth-viewer-member@example.com", "viewer"
     )

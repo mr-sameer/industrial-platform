@@ -594,7 +594,11 @@ async def review_document(
             },
         ) from exc
 
-    event = "company_document_verified" if payload.decision == "approve" else "company_document_rejected"
+    event = (
+        "company_document_verified"
+        if payload.decision == "approve"
+        else "company_document_rejected"
+    )
     await log_event(
         db,
         event,
