@@ -25,7 +25,9 @@
 name: TEMP Backend Validation (diagnostic only, not part of PR review)
 
 on:
-  workflow_dispatch: {}
+  push:
+    branches:
+      - continue-wip
 
 jobs:
   backend-validation:
