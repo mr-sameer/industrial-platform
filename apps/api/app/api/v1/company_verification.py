@@ -17,15 +17,47 @@ an Owner-only restriction would be a stricter reading than Module 3A
 established for the conceptually equivalent action. Flagged explicitly
 per this module's own documentation practice — see
 docs/adr/0029-module-3b-verification-and-identity.md.
+
+Phase 1 addition — admin document review: `review_document` below is
+gated by the **platform-level** `app.models.user.Role.ADMIN`
+(`app.core.dependencies.require_role`), deliberately not
+`CompanyRole.ADMIN` (`app.core.company_authorization.require_company_role`,
+used everywhere else in this file). Per
+docs/domain/09-permission-matrix.md's Certificates & Verification
+table, "Approve/Reject Verification" is Platform Admin only — every
+company-scoped role, including a company's own Owner/Admin, is ❌. Using
+the company-scoped dependency here would let a company approve its own
+documents, defeating the entire point of independent verification —
+see docs/adr/0029 decision #3's "future admin-review module" note. This
+is why the two dependency modules are imported and used side by side
+below rather than one being extended to cover both cases.
+
+Phase 2A addition — admin verification queue: `list_pending_documents`
+is the one route in this file that is NOT nested under
+`/{company_id}/...` — it spans every company (see
+document_service.list_documents_by_status). Registered as
+`GET /documents/pending` (-> `/companies/documents/pending`), placed
+before every `/{company_id}/...` route below to match this codebase's
+own established defensive convention for literal-vs-param path
+ambiguity (see app/api/v1/companies.py, where `/search` and
+`/slug/{slug}` are both registered ahead of `/{company_id}` for the
+same reason). Verified this cannot actually collide either way: for
+`GET /companies/documents/pending` to be swallowed by
+`/{company_id}/documents` (2 segments after /companies in both), the
+existing route's literal third segment would have to be "pending" —
+it's "documents" — so the two path shapes never overlap regardless of
+registration order. Also platform-Role.ADMIN-only, for the same reason
+review_document is.
 """
 
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 
 from app.core.company_authorization import CompanyOr404, CurrentMembership, require_company_role
 from app.core.config import get_settings
+from app.core.dependencies import CurrentUser, require_role
 from app.core.file_validation import FileValidationError
 from app.core.responses import ApiSuccess, success_response
 from app.core.storage import StorageBackend, get_storage_backend
@@ -33,12 +65,16 @@ from app.db.session import DbSession
 from app.models.company import Company
 from app.models.company_member import CompanyMember, CompanyRole
 from app.models.company_social_link import SocialPlatform
-from app.models.verification_document import DocumentType
+from app.models.user import Role
+from app.models.verification_document import DocumentStatus, DocumentType
 from app.schemas.company_verification import (
     BusinessInfoDetail,
     BusinessInfoUpdate,
     CompanyBrandingPublic,
+    DocumentReviewRequest,
     MissingRequirementPublic,
+    PendingVerificationDocumentPage,
+    PendingVerificationDocumentPublic,
     SocialLinkPublic,
     SocialLinkUpsert,
     VerificationDocumentPublic,
@@ -48,6 +84,8 @@ from app.services import branding_service, document_service, social_link_service
 from app.services import verification_score_service as scoring
 from app.services.audit_service import log_event
 from app.services.company_service import get_by_slug
+
+RequireAdmin = Annotated[object, Depends(require_role(Role.ADMIN))]
 
 router = APIRouter(prefix="/companies", tags=["company-verification"])
 settings = get_settings()
@@ -73,6 +111,61 @@ async def _to_score_public(db: DbSession, company: Company) -> VerificationScore
             for m in score.missing_requirements
         ],
         satisfied_requirement_keys=score.satisfied_requirement_keys,
+    )
+
+
+# --------------------------------------------------------------------------
+# Admin verification queue (Phase 2A) — cross-company, platform-Role.ADMIN
+# only. Deliberately positioned before every /{company_id}/... route in
+# this file — see this file's module docstring for the route-matching
+# analysis (no actual collision either way, but matches the codebase's
+# own defensive literal-before-param convention).
+# --------------------------------------------------------------------------
+
+
+@router.get("/documents/pending", response_model=ApiSuccess[PendingVerificationDocumentPage])
+async def list_pending_documents(
+    db: DbSession,
+    _admin: RequireAdmin,
+    status_filter: Annotated[DocumentStatus, Query(alias="status")] = DocumentStatus.PENDING,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+) -> ApiSuccess[PendingVerificationDocumentPage]:
+    """
+    The admin verification queue's data endpoint — every document with
+    the given status (PENDING by default) across every company, oldest
+    first. See document_service.list_documents_by_status; each row is
+    built explicitly (not via model_validate) since company_name comes
+    from the joined Company, not a flat VerificationDocument attribute.
+    """
+    documents, total = await document_service.list_documents_by_status(
+        db, status=status_filter, page=page, page_size=page_size
+    )
+    return success_response(
+        PendingVerificationDocumentPage(
+            items=[
+                PendingVerificationDocumentPublic(
+                    id=d.id,
+                    document_type=d.document_type,
+                    file_type=d.file_type,
+                    file_url=d.file_url,
+                    status=d.status,
+                    uploaded_at=d.uploaded_at,
+                    verified_at=d.verified_at,
+                    review_note=d.review_note,
+                    expiry_date=d.expiry_date,
+                    version=d.version,
+                    is_expired=d.is_expired,
+                    company_id=d.company_id,
+                    company_name=d.company.name,
+                )
+                for d in documents
+            ],
+            total=total,
+            page=page,
+            page_size=page_size,
+            total_pages=document_service.total_pages(total, page_size),
+        )
     )
 
 
@@ -447,3 +540,74 @@ async def delete_document(
         metadata={"company_id": str(company.id), "document_id": str(document_id)},
     )
     return None
+
+
+# --------------------------------------------------------------------------
+# Document review (admin) — Phase 1 of the admin document-verification
+# review workflow. See this file's module docstring for why RequireAdmin
+# (platform Role.ADMIN) is used here instead of require_company_role.
+# --------------------------------------------------------------------------
+
+
+@router.post(
+    "/{company_id}/documents/{document_id}/review",
+    response_model=ApiSuccess[VerificationDocumentPublic],
+)
+async def review_document(
+    document_id: uuid.UUID,
+    payload: DocumentReviewRequest,
+    db: DbSession,
+    company: CompanyOr404,
+    current_user: CurrentUser,
+    _admin: RequireAdmin,
+) -> ApiSuccess[VerificationDocumentPublic]:
+    """
+    Platform-admin-only. Deliberately does not depend on CurrentMembership
+    or require_company_role — a platform admin reviewing a document is
+    not expected to be a member of the company being reviewed at all.
+    The document is still resolved by (company_id, document_id) together
+    (document_service.get_document_or_none), so a reviewer cannot act on
+    a document belonging to a different company by mismatching the two
+    path params — the 404 below is IDOR-safe, matching every other
+    document endpoint in this file.
+    """
+    existing = await document_service.get_document_or_none(db, company.id, document_id)
+    if existing is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "DOCUMENT_NOT_FOUND", "message": "No such document on this company."},
+        )
+    try:
+        reviewed = await document_service.review_document(
+            db,
+            document=existing,
+            reviewer_id=current_user.id,
+            decision=payload.decision,
+            note=payload.note,
+        )
+    except document_service.DocumentNotPendingError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "DOCUMENT_NOT_PENDING",
+                "message": f"This document is already '{existing.status.value}' and cannot be reviewed again.",
+            },
+        ) from exc
+
+    event = (
+        "company_document_verified"
+        if payload.decision == "approve"
+        else "company_document_rejected"
+    )
+    await log_event(
+        db,
+        event,
+        user_id=str(current_user.id),
+        metadata={
+            "company_id": str(company.id),
+            "document_id": str(document_id),
+            "document_type": existing.document_type.value,
+            **({"review_note": payload.note} if payload.decision == "reject" else {}),
+        },
+    )
+    return success_response(VerificationDocumentPublic.model_validate(reviewed))

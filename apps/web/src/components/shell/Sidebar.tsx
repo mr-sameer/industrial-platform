@@ -1,10 +1,11 @@
 "use client";
 
-import { Building2, LayoutDashboard, Search as SearchIcon, Sparkles } from "lucide-react";
+import { Building2, LayoutDashboard, Search as SearchIcon, ShieldCheck, Sparkles } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import type { ReactNode } from "react";
 
+import { useAuth } from "@/contexts/AuthContext";
 import { cn } from "@/lib/cn";
 
 // P0 #5 (Buyer UX Audit): Consult is the core buyer workflow, but nothing
@@ -19,11 +20,25 @@ const NAV_ITEMS = [
   { href: "/companies/search", label: "Search", icon: SearchIcon },
 ];
 
+// Phase 2B-1: entry point into the admin verification review queue
+// (GET /companies/documents/pending, Phase 2A) — platform-Role.ADMIN
+// only, matching the backend's own RequireAdmin gate exactly (see
+// app/api/v1/company_verification.py). Kept separate from NAV_ITEMS
+// (appended conditionally in NavLinks below) since it's the one entry
+// not visible to every authenticated user.
+const ADMIN_NAV_ITEM = { href: "/admin/verification", label: "Verification queue", icon: ShieldCheck };
+
 function NavLinks() {
   const pathname = usePathname();
+  // useAuth() (not a prop) so both Sidebar and MobileNav — which renders
+  // this same component with zero props — automatically get identical,
+  // single-source-of-truth role-gating without either needing its own
+  // copy of this check.
+  const { user } = useAuth();
+  const items = user?.role === "admin" ? [...NAV_ITEMS, ADMIN_NAV_ITEM] : NAV_ITEMS;
   return (
     <nav className="flex flex-col gap-0.5 px-3">
-      {NAV_ITEMS.map((item) => {
+      {items.map((item) => {
         const active = pathname === item.href || (item.href !== "/dashboard" && pathname.startsWith(item.href));
         const Icon = item.icon;
         return (

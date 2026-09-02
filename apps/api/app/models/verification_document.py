@@ -1,12 +1,20 @@
 """
-VerificationDocument — Module 3B. Evidence a Company uploads toward
-verification (GST certificate, ISO/CE/BIS certs, factory license, etc.).
-See docs/domain/03-core-entities.md's `Certificate`/`Document` entries
-for the long-term domain model this is a scoped implementation of, and
-docs/adr/0029-module-3b-verification-and-identity.md for what's
-deliberately simplified here (no admin-approval workflow yet —
-`verified_by`/`verified_at` are placeholder fields nothing sets today,
-exactly as the module brief specifies).
+VerificationDocument — Module 3B, extended in Phase 1 of the admin
+document-verification review workflow. Evidence a Company uploads
+toward verification (GST certificate, ISO/CE/BIS certs, factory
+license, etc.). See docs/domain/03-core-entities.md's
+`Certificate`/`Document` entries for the long-term domain model this is
+a scoped implementation of, and
+docs/adr/0029-module-3b-verification-and-identity.md decision #3 for
+why `verified_by`/`verified_at` shipped as unset placeholders in Module
+3B. `app.services.document_service.review_document` is now the one
+place that sets `status`/`verified_by`/`verified_at`/`review_note` —
+see that function's docstring, matching the pattern
+`app.services.provenance_service.verify_provenance_record` already
+established. Note: this phase deliberately does not change what counts
+toward the verification score — `verification_score_service`'s
+`_has_document_of_type` still treats any non-REJECTED/EXPIRED status as
+sufficient, unchanged.
 """
 
 import enum
@@ -14,7 +22,7 @@ import uuid
 from datetime import date, datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Boolean, Date, DateTime, Enum, ForeignKey, Index, Integer, String, func
+from sqlalchemy import Boolean, Date, DateTime, Enum, ForeignKey, Index, Integer, String, Text, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -45,11 +53,14 @@ class DocumentFileType(str, enum.Enum):
 class DocumentStatus(str, enum.Enum):
     """
     No status here is ever set by the uploader themselves — `pending` is
-    the only status this module's endpoints can produce. `verified` and
-    `rejected` are reachable only through the (placeholder, unbuilt)
-    admin-review workflow; `expired` is derived from `expiry_date`, not
-    manually set. See VerificationScoreService for how `status` and
-    `expiry_date` both feed into scoring.
+    the only status upload/replace can produce. `verified` and
+    `rejected` are now reachable, exclusively via
+    `app.services.document_service.review_document` (the admin-review
+    workflow, Phase 1); `expired` remains unused by any code path today
+    — `VerificationDocument.is_expired` derives expiry from
+    `expiry_date` separately, without ever writing this field. See
+    VerificationScoreService for how `status` and `expiry_date` both
+    feed into scoring.
     """
 
     PENDING = "pending"
@@ -105,6 +116,10 @@ class VerificationDocument(Base):
     verified_by: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
+    # Set by review_document on REJECT (the reviewer's reason); left None
+    # on APPROVE and on every un-reviewed document — see that function's
+    # docstring. Migration 0013.
+    review_note: Mapped[str | None] = mapped_column(Text, nullable=True)
     expiry_date: Mapped[date | None] = mapped_column(Date, nullable=True)
 
     # Versioning: "replace" creates a new row (version = old.version + 1,

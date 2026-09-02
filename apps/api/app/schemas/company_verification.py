@@ -1,7 +1,9 @@
-"""Pydantic schemas — Module 3B (Company Verification & Industrial Identity)."""
+"""Pydantic schemas — Module 3B (Company Verification & Industrial Identity),
+extended in Phase 1 of the admin document-verification review workflow."""
 
 import uuid
 from datetime import date, datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field, HttpUrl
 
@@ -103,11 +105,65 @@ class VerificationDocumentPublic(BaseModel):
     status: DocumentStatus
     uploaded_at: datetime
     verified_at: datetime | None
+    # The reviewer's rejection reason (None on approval or before review)
+    # — see document_service.review_document. Deliberately no
+    # `verified_by` here: this is a public-facing shape (the company's
+    # own Documents page), and exposing which platform admin reviewed a
+    # document isn't needed by any consumer today — see who set it via
+    # the DB column directly if that's ever needed.
+    review_note: str | None
     expiry_date: date | None
     version: int
     is_expired: bool
 
     model_config = {"from_attributes": True}
+
+
+class DocumentReviewRequest(BaseModel):
+    """POST body for /companies/{id}/documents/{document_id}/review — platform-admin-only, see
+    app.core.dependencies.require_role(Role.ADMIN) at the router layer, never CompanyRole."""
+
+    decision: Literal["approve", "reject"]
+    note: str | None = Field(default=None, max_length=2000)
+
+
+class PendingVerificationDocumentPublic(BaseModel):
+    """
+    Phase 2A — the admin verification queue's row shape. Every field
+    VerificationDocumentPublic has, plus company_id/company_name: the
+    queue spans every company (see document_service.list_documents_by_status),
+    so unlike VerificationDocumentPublic (always fetched from a known,
+    already-in-context company_id) a caller here has no other way to
+    know which company a given row belongs to. Built explicitly by the
+    router from a VerificationDocument + its loaded `company` relationship
+    — not via `model_validate(document)`, since `company_name` isn't a
+    flat attribute on VerificationDocument itself.
+    """
+
+    id: uuid.UUID
+    document_type: DocumentType
+    file_type: DocumentFileType
+    file_url: str
+    status: DocumentStatus
+    uploaded_at: datetime
+    verified_at: datetime | None
+    review_note: str | None
+    expiry_date: date | None
+    version: int
+    is_expired: bool
+    company_id: uuid.UUID
+    company_name: str
+
+
+class PendingVerificationDocumentPage(BaseModel):
+    """Same {items, total, page, page_size, total_pages} shape as every other
+    paginated list in this codebase (e.g. schemas.company.Page, schemas.provenance.*Page)."""
+
+    items: list[PendingVerificationDocumentPublic]
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
 
 
 class MissingRequirementPublic(BaseModel):
