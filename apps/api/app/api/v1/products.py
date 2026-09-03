@@ -73,6 +73,7 @@ def _to_detail(product: Product) -> ProductDetail:
                 specification_name=attr.specification.name,
                 unit=attr.specification.unit,
                 value=attr.value,
+                latest_evidence_id=attr.latest_evidence_id,
             )
             for attr in product.attributes
         ],

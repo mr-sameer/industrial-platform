@@ -37,6 +37,7 @@ from app.api.v1.entity_resolution import router as entity_resolution_router
 from app.api.v1.graph import router as graph_router
 from app.api.v1.health import router as health_router
 from app.api.v1.offerings import router as offerings_router
+from app.api.v1.product_attribute_evidence import router as product_attribute_evidence_router
 from app.api.v1.products import categories_router
 from app.api.v1.products import router as products_router
 from app.api.v1.provenance import router as provenance_router
@@ -307,6 +308,7 @@ def create_app() -> FastAPI:
     app.include_router(offerings_router, prefix="/api/v1")
     app.include_router(products_router, prefix="/api/v1")
     app.include_router(categories_router, prefix="/api/v1")
+    app.include_router(product_attribute_evidence_router, prefix="/api/v1")
     app.include_router(provenance_router, prefix="/api/v1")
     app.include_router(sources_router, prefix="/api/v1")
     app.include_router(acquisition_router, prefix="/api/v1")

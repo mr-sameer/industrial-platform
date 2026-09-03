@@ -61,6 +61,11 @@ class ProductAttributePublic(BaseModel):
     specification_name: str
     unit: str | None
     value: str
+    # Traceability pointer (additive) — see
+    # app.models.product_attribute.ProductAttribute's own docstring:
+    # which ProductAttributeEvidence row is currently backing this
+    # value, or None if this attribute has no applied evidence trail.
+    latest_evidence_id: uuid.UUID | None = None
 
     model_config = {"from_attributes": True}
 

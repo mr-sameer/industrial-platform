@@ -26,6 +26,7 @@ from app.models.password_history import PasswordHistory
 from app.models.password_reset_token import PasswordResetToken
 from app.models.product import Product, ProductStatus
 from app.models.product_attribute import ProductAttribute
+from app.models.product_attribute_evidence import ProductAttributeEvidence
 from app.models.product_category import ProductCategory
 from app.models.product_specification import ProductSpecification, RiskTier, SpecificationDataType
 from app.models.provenance_record import (
@@ -96,6 +97,7 @@ __all__ = [
     "PasswordResetToken",
     "Product",
     "ProductAttribute",
+    "ProductAttributeEvidence",
     "ProductCategory",
     "ProductSpecification",
     "ProductStatus",
