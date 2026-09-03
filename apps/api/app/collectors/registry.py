@@ -14,6 +14,7 @@ extensibility goal.
 
 from app.collectors.base import SourceAdapter
 from app.collectors.census_cbp_adapter import CensusCBPAdapter
+from app.collectors.document_extraction_adapter import DocumentExtractionAdapter
 from app.collectors.manual_entry_adapter import ManualEntryAdapter
 from app.collectors.mca_data_gov_in_adapter import MCADataGovInAdapter
 from app.collectors.mock_adapter import MockSourceAdapter
@@ -27,6 +28,7 @@ _ADAPTERS: dict[str, type[SourceAdapter]] = {
     CensusCBPAdapter.adapter_type: CensusCBPAdapter,
     USITCDataWebAdapter.adapter_type: USITCDataWebAdapter,
     ManualEntryAdapter.adapter_type: ManualEntryAdapter,
+    DocumentExtractionAdapter.adapter_type: DocumentExtractionAdapter,
 }
 
 

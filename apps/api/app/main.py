@@ -33,6 +33,7 @@ from app.api.v1.auth import router as auth_router
 from app.api.v1.companies import router as companies_router
 from app.api.v1.company_verification import router as company_verification_router
 from app.api.v1.data_quality import router as data_quality_router
+from app.api.v1.documents import router as documents_router
 from app.api.v1.entity_resolution import router as entity_resolution_router
 from app.api.v1.graph import router as graph_router
 from app.api.v1.health import router as health_router
@@ -313,6 +314,7 @@ def create_app() -> FastAPI:
     app.include_router(sources_router, prefix="/api/v1")
     app.include_router(acquisition_router, prefix="/api/v1")
     app.include_router(acquisition_review_router, prefix="/api/v1")
+    app.include_router(documents_router, prefix="/api/v1")
     app.include_router(entity_resolution_router, prefix="/api/v1")
     app.include_router(data_quality_router, prefix="/api/v1")
     app.include_router(graph_router, prefix="/api/v1")
