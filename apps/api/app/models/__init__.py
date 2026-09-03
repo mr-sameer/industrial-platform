@@ -51,6 +51,7 @@ from app.models.source_registry import (
     SourceClass,
     SourceRegistry,
 )
+from app.models.specification_alias import SpecificationAlias
 from app.models.user import Role, User
 from app.models.verification_document import (
     DocumentFileType,
@@ -121,6 +122,7 @@ __all__ = [
     "SocialPlatform",
     "SourceClass",
     "SourceRegistry",
+    "SpecificationAlias",
     "SpecificationDataType",
     "User",
     "VerificationDocument",

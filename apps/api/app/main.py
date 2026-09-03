@@ -44,6 +44,8 @@ from app.api.v1.products import router as products_router
 from app.api.v1.provenance import router as provenance_router
 from app.api.v1.provenance import sources_router
 from app.api.v1.requirements import router as requirements_router
+from app.api.v1.spec_extraction import router as spec_extraction_router
+from app.api.v1.specification_alias import router as specification_alias_router
 from app.core.config import get_settings
 from app.core.logging import configure_logging, get_logger
 from app.core.middleware import RequestContextMiddleware
@@ -310,6 +312,8 @@ def create_app() -> FastAPI:
     app.include_router(products_router, prefix="/api/v1")
     app.include_router(categories_router, prefix="/api/v1")
     app.include_router(product_attribute_evidence_router, prefix="/api/v1")
+    app.include_router(spec_extraction_router, prefix="/api/v1")
+    app.include_router(specification_alias_router, prefix="/api/v1")
     app.include_router(provenance_router, prefix="/api/v1")
     app.include_router(sources_router, prefix="/api/v1")
     app.include_router(acquisition_router, prefix="/api/v1")
