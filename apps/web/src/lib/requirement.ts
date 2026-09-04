@@ -689,28 +689,29 @@ export function resolveCategoryId(categories: ProductCategory[], text: string): 
 }
 
 // --------------------------------------------------------------------
-// Technical criteria extraction (numeric specs only) — first MVP.
+// Technical criteria extraction — numeric specs (gte/lte) and Pump
+// Type (eq).
 //
-// Deterministic, explicit-vocabulary extraction of a numeric technical
-// constraint ("motor power at least 3 kW") into a real
-// RequirementSpecificationCriterionInput — the identical "ask, don't
-// guess" discipline as every extractor above: a criterion is produced
-// ONLY when a recognized specification phrase, a recognized operator
-// phrase, a number, AND that specification's OWN configured unit are
-// ALL explicitly present. No component is ever inferred; there is no
-// default operator (a bare "3 kW motor" with no comparison word
-// produces nothing, not an assumed "="), and no unit conversion of any
-// kind (HP is never read as kW, L/min is never read as m3/hr, ft is
-// never read as m — an unsupported/mismatched unit means no criterion,
-// never a converted one).
+// Deterministic, explicit-vocabulary extraction of technical
+// constraints ("motor power at least 3 kW", "a centrifugal pump") into
+// real RequirementSpecificationCriterionInput rows — the identical
+// "ask, don't guess" discipline as every extractor above: a criterion
+// is produced ONLY when the buyer's text explicitly, unambiguously
+// states it. For numeric specs: a recognized specification phrase, a
+// recognized operator phrase, a number, AND that specification's OWN
+// configured unit must ALL be present — no default operator (a bare
+// "3 kW motor" produces nothing, not an assumed "="), no unit
+// conversion (HP is never read as kW, L/min is never read as m3/hr, ft
+// is never read as m). For Pump Type: an explicit, recognized type
+// phrase must appear in the text — never inferred from company,
+// category, motor power, head, flow, or supplier identity.
 //
-// Scoped to exactly the three NUMBER-datatype specs this pilot has
-// today (Motor Power, Flow Rate, Head) — Pump Type is TEXT and
-// deliberately excluded, left for a later explicit-equality design
-// (see this module's own completion report). Only fires against a
-// specification the caller actually passed in (the category's REAL,
-// backend-fetched specs — see lib/products.ts's listCategorySpecifications),
-// never a hardcoded/guessed specification_id.
+// Scoped to exactly the four specs this pilot has today (Motor Power,
+// Flow Rate, Head — all NUMBER/gte-lte; Pump Type — TEXT/eq). Only
+// fires against a specification the caller actually passed in (the
+// category's REAL, backend-fetched specs — see lib/products.ts's
+// listCategorySpecifications), never a hardcoded/guessed
+// specification_id.
 // --------------------------------------------------------------------
 
 const GTE_OPERATOR_PHRASES = ["at least", "minimum", "greater than", "more than", "above"];
@@ -748,15 +749,78 @@ function escapeRegExp(s: string): string {
 
 const TECHNICAL_NUMBER_PATTERN = "\\d+(?:\\.\\d+)?";
 
+// Pump Type (text, eq) — deliberately small alias table, justified
+// only by the two real pilot products' own real, VERIFIED Pump Type
+// values (CRI MSP-2E/22 = "Vertical Multistage Centrifugal Pump", KSB
+// 373/1A = "Submersible Motor Pumpset" — see
+// apps/api/scripts/curate_cri_msp_2e_22_pilot.py and this pilot's KSB
+// curation session). Buyer phrase -> the FULL canonical value it must
+// equal, NOT the buyer's own short phrase: the backend's `eq` operator
+// for text specs (app.services.requirement_matching_service
+// ._evaluate_criterion) is exact, case-insensitive WHOLE-STRING
+// equality — never a substring/contains check. A criterion whose value
+// was literally "centrifugal" could never equal "Vertical Multistage
+// Centrifugal Pump" and would silently exclude every real candidate,
+// always, regardless of type. Mapping the buyer's shorter, more
+// natural phrase to the one real canonical string it corresponds to
+// today is therefore not an approximation — it is the only
+// representation compatible with the matcher's real, unmodified
+// semantics. This deliberately does not generalize to a universal pump
+// taxonomy: if a future product ever introduces a second, genuinely
+// different "centrifugal"-type canonical value, "centrifugal" alone
+// would need to stop being unambiguous — a real limitation, not
+// silently patched over here.
+const PUMP_TYPE_PHRASE_TO_CANONICAL: Record<string, string> = {
+  "vertical multistage centrifugal pump": "Vertical Multistage Centrifugal Pump",
+  "vertical multistage centrifugal": "Vertical Multistage Centrifugal Pump",
+  "centrifugal pump": "Vertical Multistage Centrifugal Pump",
+  centrifugal: "Vertical Multistage Centrifugal Pump",
+  "submersible motor pumpset": "Submersible Motor Pumpset",
+  "submersible motor pump": "Submersible Motor Pumpset",
+  "submersible pump": "Submersible Motor Pumpset",
+  submersible: "Submersible Motor Pumpset",
+};
+
+// Longest phrase first — mirrors resolveCategoryId's own "the longest
+// (most specific) matching name wins" tie-break above. Matters if a
+// future, genuinely distinct canonical value is ever added under a
+// shorter alias's own word; today every alias for a given canonical
+// value resolves identically regardless of order.
+const PUMP_TYPE_PHRASES_LONGEST_FIRST = Object.keys(PUMP_TYPE_PHRASE_TO_CANONICAL).sort(
+  (a, b) => b.length - a.length
+);
+
 /**
- * Extracts numeric technical criteria from free text against the
- * REAL specifications of the buyer's already-resolved category.
- * Returns [] whenever the category has none of the supported specs,
- * or the buyer's phrasing doesn't explicitly satisfy every required
- * component (spec phrase + operator phrase + number + matching unit)
- * for at least one criterion — never a partial/best-effort criterion.
- * At most one criterion per specification (mirrors the backend's own
- * "duplicate specification_id" rejection, app.services.requirement_service).
+ * Extracts a single Pump Type equality criterion from free text — null
+ * when no recognized type phrase is explicitly present. Never inferred
+ * from anything other than the buyer's own words.
+ */
+function extractPumpTypeCriterion(
+  text: string,
+  spec: ProductSpecification
+): RequirementSpecificationCriterionInput | null {
+  for (const phrase of PUMP_TYPE_PHRASES_LONGEST_FIRST) {
+    if (new RegExp(`\\b${escapeRegExp(phrase)}\\b`, "i").test(text)) {
+      return {
+        specification_id: spec.id,
+        operator: "eq",
+        value: PUMP_TYPE_PHRASE_TO_CANONICAL[phrase]!,
+      };
+    }
+  }
+  return null;
+}
+
+/**
+ * Extracts technical criteria from free text against the REAL
+ * specifications of the buyer's already-resolved category — numeric
+ * gte/lte criteria (Motor Power/Flow Rate/Head) and a Pump Type eq
+ * criterion. Returns [] whenever the category has none of the
+ * supported specs, or the buyer's phrasing doesn't explicitly satisfy
+ * every required component for a given spec — never a partial/
+ * best-effort criterion. At most one criterion per specification
+ * (mirrors the backend's own "duplicate specification_id" rejection,
+ * app.services.requirement_service).
  */
 export function extractTechnicalCriteria(
   text: string,
@@ -766,6 +830,12 @@ export function extractTechnicalCriteria(
   const matchedRanges: Array<[number, number]> = [];
 
   for (const spec of specifications) {
+    if (spec.name === "Pump Type" && spec.datatype === "text") {
+      const criterion = extractPumpTypeCriterion(text, spec);
+      if (criterion) criteria.push(criterion);
+      continue;
+    }
+
     if (spec.datatype !== "number") continue; // never fire against a non-numeric spec, even on a name/alias coincidence
     const aliases = TECHNICAL_SPEC_ALIASES[spec.name];
     const unitVariants = TECHNICAL_SPEC_UNIT_VARIANTS[spec.name];

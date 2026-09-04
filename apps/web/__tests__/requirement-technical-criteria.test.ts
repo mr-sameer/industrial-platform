@@ -174,3 +174,108 @@ describe("extractTechnicalCriteria", () => {
     expect(criteria).toEqual([{ specification_id: MOTOR_POWER_ID, operator: "gte", value: 5 }]);
   });
 });
+
+/**
+ * Pump Type (text, eq) — extends extractTechnicalCriteria to support a
+ * buyer's explicit product-type statement ("a centrifugal pump"). The
+ * criterion's `value` is the FULL canonical ProductAttribute string
+ * ("Vertical Multistage Centrifugal Pump" / "Submersible Motor
+ * Pumpset"), never the buyer's own short phrase — the backend's `eq`
+ * operator for text specs is exact, case-insensitive WHOLE-STRING
+ * equality (app.services.requirement_matching_service
+ * ._evaluate_criterion), never substring/fuzzy. A criterion of value
+ * "centrifugal" could never equal "Vertical Multistage Centrifugal
+ * Pump" and would silently exclude every real candidate — see
+ * lib/requirement.ts's own PUMP_TYPE_PHRASE_TO_CANONICAL docstring.
+ */
+describe("extractTechnicalCriteria — Pump Type equality", () => {
+  it("extracts a Pump Type criterion for 'centrifugal', mapped to the real CRI canonical value", () => {
+    const criteria = extractTechnicalCriteria("I need a centrifugal pump", INDUSTRIAL_PUMPS_SPECS);
+    expect(criteria).toEqual([
+      { specification_id: PUMP_TYPE_ID, operator: "eq", value: "Vertical Multistage Centrifugal Pump" },
+    ]);
+  });
+
+  it("extracts a Pump Type criterion for 'submersible', mapped to the real KSB canonical value", () => {
+    const criteria = extractTechnicalCriteria("I need a submersible pump", INDUSTRIAL_PUMPS_SPECS);
+    expect(criteria).toEqual([
+      { specification_id: PUMP_TYPE_ID, operator: "eq", value: "Submersible Motor Pumpset" },
+    ]);
+  });
+
+  it("extracts a Pump Type criterion for the exact canonical phrase itself", () => {
+    const criteria = extractTechnicalCriteria(
+      "I need a vertical multistage centrifugal pump",
+      INDUSTRIAL_PUMPS_SPECS
+    );
+    expect(criteria).toEqual([
+      { specification_id: PUMP_TYPE_ID, operator: "eq", value: "Vertical Multistage Centrifugal Pump" },
+    ]);
+  });
+
+  it("produces no Pump Type criterion when no type phrase is stated", () => {
+    const criteria = extractTechnicalCriteria(
+      "I need an industrial pump with at least 3 kW motor power",
+      INDUSTRIAL_PUMPS_SPECS
+    );
+    expect(criteria.some((c) => c.specification_id === PUMP_TYPE_ID)).toBe(false);
+  });
+
+  it("produces both a Pump Type and a Motor Power criterion together ('centrifugal' + kW)", () => {
+    const criteria = extractTechnicalCriteria(
+      "I need a centrifugal pump with at least 3 kW motor power",
+      INDUSTRIAL_PUMPS_SPECS
+    );
+    expect(criteria).toHaveLength(2);
+    expect(criteria).toContainEqual({
+      specification_id: PUMP_TYPE_ID, operator: "eq", value: "Vertical Multistage Centrifugal Pump",
+    });
+    expect(criteria).toContainEqual({ specification_id: MOTOR_POWER_ID, operator: "gte", value: 3 });
+  });
+
+  it("produces both a Pump Type and a Motor Power criterion together ('submersible' + kW)", () => {
+    const criteria = extractTechnicalCriteria(
+      "I need a submersible pump with at least 3 kW motor power",
+      INDUSTRIAL_PUMPS_SPECS
+    );
+    expect(criteria).toHaveLength(2);
+    expect(criteria).toContainEqual({
+      specification_id: PUMP_TYPE_ID, operator: "eq", value: "Submersible Motor Pumpset",
+    });
+    expect(criteria).toContainEqual({ specification_id: MOTOR_POWER_ID, operator: "gte", value: 3 });
+  });
+
+  it("produces no Pump Type criterion for an unrelated sentence ('for irrigation')", () => {
+    const criteria = extractTechnicalCriteria("Need a pump for irrigation", INDUSTRIAL_PUMPS_SPECS);
+    expect(criteria).toEqual([]);
+  });
+
+  it("never infers Pump Type from the specification list alone — an empty/unresolved category yields nothing", () => {
+    expect(extractTechnicalCriteria("I need a centrifugal pump", [])).toEqual([]);
+  });
+
+  it("does not fire on a Pump Type-named specification that isn't actually text datatype", () => {
+    const criteria = extractTechnicalCriteria("I need a centrifugal pump", [
+      { id: "spec-weird", category_id: "cat-pumps", name: "Pump Type", unit: null, datatype: "number", enum_options: null, required: false },
+    ]);
+    expect(criteria).toEqual([]);
+  });
+
+  it("real pilot semantics: a centrifugal-type criterion rejects KSB's real Submersible value and accepts CRI's real Vertical Multistage Centrifugal value under the backend's exact-equality rule", () => {
+    // This test asserts the VALUE shape only (extractTechnicalCriteria
+    // never touches the matcher) — the actual eq-equality evaluation
+    // itself is backend code (app.services.requirement_matching_service),
+    // covered separately by the Python test suite and the real
+    // canonical-pilot acceptance run. What's asserted here is that the
+    // frontend emits the one value ("Vertical Multistage Centrifugal
+    // Pump") that will correctly match CRI and correctly fail to match
+    // KSB's real, different, real value ("Submersible Motor Pumpset")
+    // under plain case-insensitive string equality.
+    const criteria = extractTechnicalCriteria("I need a centrifugal pump", INDUSTRIAL_PUMPS_SPECS);
+    const value = criteria[0]!.value as string;
+    const cri_real_value = "Vertical Multistage Centrifugal Pump";
+    const ksb_real_value = "Submersible Motor Pumpset";
+    expect(value.toLowerCase()).toBe(cri_real_value.toLowerCase());
+    expect(value.toLowerCase()).not.toBe(ksb_real_value.toLowerCase());
+  });
+});
