@@ -192,8 +192,23 @@ const FILLER_PREFIXES = [
 // to missing rather than grabbing the wrong digit.
 const QUANTITY_UNIT_PATTERN = new RegExp(`\\b(${NUMBER_WORD_PATTERN})\\s+(?:units?|pieces?|pcs?)\\b`, "i");
 const QUANTITY_LABEL_PATTERN = new RegExp(`\\b(?:quantity|qty)\\s*(?:of|is|:)?\\s*(${NUMBER_WORD_PATTERN})\\b`, "i");
+// A hedge word a real buyer sometimes puts between the opening phrase
+// and the number ("Need about 500 room heaters") — small, fixed list,
+// same philosophy as every other lookup in this file, not a general
+// adverb parser.
+const QUANTITY_HEDGE_PATTERN = "(?:(?:about|around|approximately|roughly)\\s+)?";
+// Guards QUANTITY_OPENING_PATTERN/QUANTITY_VERB_PATTERN against a number
+// that's actually a measurement or a model/year, not a count — "500 mm
+// pumps" is one 500mm-diameter pump, "2026 model pumps" is model-year
+// 2026, neither is "how many". Same small/fixed-list philosophy as
+// KNOWN_COUNTRIES/KNOWN_CITIES/KNOWN_CERTIFICATIONS above, not a units
+// database. A glued suffix with no space at all ("500W") already fails
+// the patterns' own trailing `\b` (digit and letter are both word
+// characters, so no boundary exists between them) and needs no explicit
+// guard here.
+const QUANTITY_DISALLOWED_SUFFIX_PATTERN = "(?!\\s*(?:mm|cm|km|kg|mg|kw|hp|volts?|watts?|models?)\\b)";
 const QUANTITY_OPENING_PATTERN = new RegExp(
-  `^(?:${FILLER_PREFIXES.join("|")})\\s+(${NUMBER_WORD_PATTERN})\\b`,
+  `^(?:${FILLER_PREFIXES.join("|")})\\s+${QUANTITY_HEDGE_PATTERN}(${NUMBER_WORD_PATTERN})${QUANTITY_DISALLOWED_SUFFIX_PATTERN}\\b`,
   "i"
 );
 // ForgeX Product Audit P0: covers a number sitting right after the verb
@@ -210,14 +225,15 @@ const QUANTITY_OPENING_PATTERN = new RegExp(
 // number" rule, which would risk the same false-positive a bare-number
 // rule elsewhere in this file already guards against.
 const QUANTITY_VERB_PATTERN = new RegExp(
-  `\\b(?:produce|manufacture|supply|deliver|provide|make)\\s+(${NUMBER_WORD_PATTERN})\\b`,
+  `\\b(?:produce|manufacture|supply|deliver|provide|make)\\s+(${NUMBER_WORD_PATTERN})${QUANTITY_DISALLOWED_SUFFIX_PATTERN}\\b`,
   "i"
 );
 // Mirrors QUANTITY_OPENING_PATTERN for the productOrCategory remainder
 // (see below): by the time that code runs, the opening filler phrase
 // itself has already been stripped off the front of the remainder, so
-// what's left to strip is just the bare number sitting at the new start.
-const QUANTITY_OPENING_STRIP_PATTERN = new RegExp(`^(?:${NUMBER_WORD_PATTERN})\\s+`, "i");
+// what's left to strip is just the (optionally hedged) number sitting
+// at the new start.
+const QUANTITY_OPENING_STRIP_PATTERN = new RegExp(`^${QUANTITY_HEDGE_PATTERN}(?:${NUMBER_WORD_PATTERN})\\s+`, "i");
 
 // "months"/"years" added alongside the original days/weeks/hours — a
 // real buyer's timeline is at least as likely to be stated in months as

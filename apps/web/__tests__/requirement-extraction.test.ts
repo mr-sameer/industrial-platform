@@ -279,4 +279,69 @@ describe("extractFromText — structured field extraction", () => {
       expect(req.quantity).toEqual({ value: "500", confidence: "explicit" });
     });
   });
+
+  /**
+   * Regression coverage for the second, real bug found running the
+   * live Consult flow after the P0 #2 fix above: the opening-phrase
+   * rule fires on ANY number immediately after "need"/"looking for"/
+   * etc., with no check of what follows it — so a measurement ("500 mm
+   * pumps"), an electrical rating, or a model year ("2026 model pumps")
+   * were all silently misread as a purchase quantity. Also covers a
+   * hedge word a real buyer sometimes inserts before the number ("Need
+   * about 500 room heaters"), which previously broke the opening
+   * pattern's strict adjacency and fell through to Unknown.
+   */
+  describe("quantity opening-phrase pattern — false positives and hedge words", () => {
+    it("extracts 'I need <number> <product>' (bare 'need', not just 'i need')", () => {
+      const req = extractFromText(newRequirementObject("x"), "Need 500 pumps", true);
+      expect(req.quantity).toEqual({ value: "500", confidence: "explicit" });
+    });
+
+    it("extracts a quantity stated via 'we require <number> units'", () => {
+      const req = extractFromText(newRequirementObject("x"), "We require 250 units", true);
+      expect(req.quantity).toEqual({ value: "250", confidence: "explicit" });
+    });
+
+    it("extracts 'looking for <number> <product>'", () => {
+      const req = extractFromText(newRequirementObject("x"), "Looking for 100 industrial pumps", true);
+      expect(req.quantity).toEqual({ value: "100", confidence: "explicit" });
+    });
+
+    it("extracts a quantity through a hedge word ('Need about 500 room heaters')", () => {
+      const req = extractFromText(newRequirementObject("x"), "Need about 500 room heaters", true);
+      expect(req.quantity).toEqual({ value: "500", confidence: "explicit" });
+      expect(req.productOrCategory.value).not.toMatch(/\d/);
+      expect(req.productOrCategory.value).toContain("room heater");
+    });
+
+    it("does not read a wattage rating glued to the product noun as a quantity ('500W room heaters')", () => {
+      const req = extractFromText(newRequirementObject("x"), "Need 500W room heaters", true);
+      expect(req.quantity.value).toBeNull();
+      expect(req.quantity.confidence).toBe("missing");
+    });
+
+    it("does not read a millimeter dimension as a quantity ('500 mm pumps')", () => {
+      const req = extractFromText(newRequirementObject("x"), "Need 500 mm pumps", true);
+      expect(req.quantity.value).toBeNull();
+      expect(req.quantity.confidence).toBe("missing");
+    });
+
+    it("does not read a model year as a quantity ('2026 model pumps')", () => {
+      const req = extractFromText(newRequirementObject("x"), "Need 2026 model pumps", true);
+      expect(req.quantity.value).toBeNull();
+      expect(req.quantity.confidence).toBe("missing");
+    });
+
+    it("still resolves the exact live-verified full sentence correctly (quantity, no regression on other fields)", () => {
+      const req = extractFromText(
+        newRequirementObject("x"),
+        "I need 500 room heaters for a hotel chain, ISO certified, within 45 days",
+        true
+      );
+      expect(req.quantity).toEqual({ value: "500", confidence: "explicit" });
+      expect(req.certifications.value).toEqual(["ISO"]);
+      expect(req.timeline).toEqual({ value: "45 days", confidence: "explicit" });
+      expect(req.productOrCategory.value).not.toMatch(/\d/);
+    });
+  });
 });
