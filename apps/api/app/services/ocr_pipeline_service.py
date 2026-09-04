@@ -32,14 +32,20 @@ from app.core.storage import get_storage_backend
 from app.models.ocr_result import OCRResult
 from app.models.raw_observation import RawObservation
 from app.services import ocr_result_service, provenance_service
-from app.services.pdf_rasterization_service import DEFAULT_DPI, rasterize_page
+from app.services.pdf_rasterization_service import DEFAULT_DPI, RenderedPage, rasterize_page
 from app.services.tesseract_ocr_service import ENGINE_NAME, get_engine_version, run_ocr
 
 __all__ = [
     "InvalidRawObservationForOcrError",
+    "OCRResultNotFoundError",
     "RawObservationNotFoundError",
+    "get_rendered_page_for_ocr_result",
     "process_raw_observation_page",
 ]
+
+
+class OCRResultNotFoundError(Exception):
+    pass
 
 
 class RawObservationNotFoundError(Exception):
@@ -106,4 +112,44 @@ async def process_raw_observation_page(
         render_dpi=dpi,
         render_params=rendered.render_params,
         force_reprocess=force_reprocess,
+    )
+
+
+async def get_rendered_page_for_ocr_result(
+    db: AsyncSession, ocr_result_id: uuid.UUID
+) -> RenderedPage:
+    """
+    Table Intelligence V1 foundation: re-obtains the SAME rendered page
+    image an existing OCRResult's text was produced from — needed
+    because OCRResult stores text, not word bounding boxes, and
+    app.extraction.table_geometry's position-based fitting needs the
+    boxes (app.services.tesseract_ocr_service.get_word_boxes). This is
+    always a rasterization CACHE HIT in practice: the OCRResult's own
+    (content_hash, page_number, render_dpi, renderer) already produced
+    and cached this exact image during the original OCR run — nothing
+    here re-renders from scratch or diverges from what was actually
+    OCR'd.
+    """
+    ocr_result = await ocr_result_service.get_ocr_result(db, ocr_result_id)
+    if ocr_result is None:
+        raise OCRResultNotFoundError(str(ocr_result_id))
+
+    observation = await provenance_service.get_raw_observation(db, ocr_result.raw_observation_id)
+    if observation is None:
+        raise RawObservationNotFoundError(str(ocr_result.raw_observation_id))
+
+    storage_key = _get_storage_key(observation)
+    storage = get_storage_backend()
+    try:
+        pdf_bytes = storage.read_bytes(storage_key)
+    except FileNotFoundError as exc:
+        raise InvalidRawObservationForOcrError(
+            f"No stored file found at key {storage_key!r} for RawObservation {observation.id}."
+        ) from exc
+
+    return rasterize_page(
+        pdf_bytes,
+        content_hash=observation.content_hash,
+        page_number=ocr_result.page_number,
+        dpi=ocr_result.render_dpi,
     )

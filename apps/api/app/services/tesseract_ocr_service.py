@@ -35,12 +35,23 @@ scale to the 0.0-1.0 scale app.models.ocr_result.OCRResult.confidence
 is documented to use. A page with zero such rows (nothing Tesseract
 considered a word at all — e.g. a blank page) yields EMPTY_PAGE_CONFIDENCE
 (0.0), never None and never a crash.
+
+get_word_boxes (Table Intelligence V1 foundation): a second, additive
+entry point returning each recognized word's own bounding box, not
+just an aggregate page confidence — the input app.extraction.table_geometry's
+deterministic pitch/origin fitting and position-based cell assignment
+require. Applies the identical conf >= 0 filter as run_ocr's own
+confidence calculation, for the same reason (page/block/paragraph/line
+container rows carry no real per-word position or confidence of their
+own). Does not change run_ocr's behavior or signature in any way.
 """
 
 from dataclasses import dataclass
 
 import pytesseract
 from PIL import Image
+
+from app.extraction.table_geometry import WordBox
 
 ENGINE_NAME = "tesseract"
 EMPTY_PAGE_CONFIDENCE = 0.0
@@ -51,6 +62,7 @@ __all__ = [
     "TesseractExecutionError",
     "TesseractOcrOutput",
     "get_engine_version",
+    "get_word_boxes",
     "run_ocr",
 ]
 
@@ -96,3 +108,28 @@ def run_ocr(image: Image.Image) -> TesseractOcrOutput:
         confidence = EMPTY_PAGE_CONFIDENCE
 
     return TesseractOcrOutput(text=text, confidence=confidence, word_count=len(word_confidences))
+
+
+def get_word_boxes(image: Image.Image) -> list[WordBox]:
+    try:
+        data = pytesseract.image_to_data(image, output_type=pytesseract.Output.DICT)
+    except (pytesseract.TesseractNotFoundError, pytesseract.TesseractError) as exc:
+        raise TesseractExecutionError(f"Tesseract OCR execution failed: {exc}") from exc
+
+    boxes: list[WordBox] = []
+    for i in range(len(data["text"])):
+        text = data["text"][i].strip()
+        conf = int(data["conf"][i])
+        if not text or conf < 0:
+            continue
+        boxes.append(
+            WordBox(
+                text=text,
+                x=float(data["left"][i]),
+                y=float(data["top"][i]),
+                width=float(data["width"][i]),
+                height=float(data["height"][i]),
+                confidence=conf,
+            )
+        )
+    return boxes
