@@ -6,9 +6,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1
 WORKDIR /app
 
-# Build deps for psycopg/asyncpg wheels, removed from the final image
+# Build deps for psycopg/asyncpg wheels, plus tesseract-ocr — the real
+# OCR engine binary pytesseract (see requirements.txt) invokes via
+# subprocess; it is NOT a Python package and is not installed by pip.
+# OCR Processing Foundation — approved technology-selection experiment.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      libpq-dev gcc curl \
+      libpq-dev gcc curl tesseract-ocr \
     && rm -rf /var/lib/apt/lists/*
 
 # ---- Dependencies (cached layer) ----

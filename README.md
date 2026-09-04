@@ -25,6 +25,14 @@ yet.**
 - Node.js 20.11+ and [pnpm](https://pnpm.io/) 9+ (`corepack enable`)
 - Python 3.12+
 - Flutter 3.22+ (only if working on `apps/mobile`)
+- **Tesseract OCR** (only if running the API outside Docker and touching
+  OCR — `app.services.tesseract_ocr_service`/`ocr_pipeline_service`):
+  the `pytesseract` Python package is installed by pip, but it only
+  invokes the real `tesseract` binary via subprocess — that binary must
+  be installed separately. macOS: `brew install tesseract`. Linux:
+  `apt-get install tesseract-ocr`. Docker users get this automatically
+  (see `apps/api/Dockerfile`); everything else in the API runs fine
+  without it.
 
 ## Quick start (Docker — recommended)
 
