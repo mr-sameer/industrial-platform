@@ -38,6 +38,7 @@ from app.services import product_attribute_evidence_service
 from app.services.product_attribute_evidence_service import (
     AlreadyVerifiedError,
     EmptyValueError,
+    EvidenceConfidenceTooLowError,
     EvidenceNotReviewableStateError,
     EvidenceNotVerifiedError,
     ProductNotFoundForEvidenceError,
@@ -188,6 +189,18 @@ async def verify_attribute_evidence(
             detail={
                 "code": "ALREADY_VERIFIED",
                 "message": "This attribute evidence is already verified.",
+            },
+        ) from exc
+    except EvidenceConfidenceTooLowError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "code": "EVIDENCE_CONFIDENCE_TOO_LOW",
+                "message": (
+                    f"This attribute evidence's confidence ({evidence.confidence}) is below "
+                    f"the minimum verifiable confidence "
+                    f"({product_attribute_evidence_service.MIN_VERIFIABLE_CONFIDENCE})."
+                ),
             },
         ) from exc
     return success_response(ProductAttributeEvidencePublic.model_validate(verified))

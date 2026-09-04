@@ -635,6 +635,55 @@ async def test_conflicting_occurrences_same_document_low_confidence_no_data_conf
 
 
 @pytest.mark.asyncio
+async def test_ambiguous_extraction_evidence_cannot_be_verified(client):
+    """P0 safety guard, exercised end-to-end from real extraction output:
+    a RULE_BASED evidence row produced from conflicting occurrences in
+    the same document (confidence forced to 0.20, the TIER_AMBIGUOUS
+    floor) must be refused by /verify — the extractor's own ambiguity
+    signal must never be promotable to canonical ProductAttribute truth
+    without an independent, higher-confidence human claim."""
+    admin = await _register_admin(client, "spx-ambiguous-no-verify@example.com")
+    _category, spec, product = await _setup(
+        client, admin, spec_kwargs={"name": "Flow", "unit": "m³/h", "datatype": "number"}
+    )
+    source = await _create_source(client, admin)
+    observation = await _create_document_observation(
+        client,
+        admin,
+        source["id"],
+        ["Flow: 50 m³/h", "Flow: 60 m³/h"],
+        content_hash="h-ambiguous-no-verify",
+    )
+    res = await _extract(client, admin, product["id"], observation["id"])
+    evidence_id = res.json()["data"]["created"][0]
+
+    evidence_list = await _get_evidence(client, admin, product["id"], spec["id"])
+    assert evidence_list[0]["confidence"] == 0.20
+    assert evidence_list[0]["extraction_context"]["ambiguous"] is True
+
+    verify_res = await client.post(
+        f"/api/v1/products/attribute-evidence/{evidence_id}/verify",
+        headers=_auth_headers(admin),
+    )
+    assert verify_res.status_code == 422, verify_res.text
+    assert verify_res.json()["error"]["code"] == "EVIDENCE_CONFIDENCE_TOO_LOW"
+
+    evidence_list = await _get_evidence(client, admin, product["id"], spec["id"])
+    assert evidence_list[0]["status"] == "extracted"
+    assert evidence_list[0]["verified_by"] is None
+    assert evidence_list[0]["verified_at"] is None
+
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(ProductAttribute).where(
+                ProductAttribute.product_id == uuid.UUID(product["id"]),
+                ProductAttribute.specification_id == uuid.UUID(spec["id"]),
+            )
+        )
+        assert result.scalar_one_or_none() is None
+
+
+@pytest.mark.asyncio
 async def test_same_value_different_safe_units_treated_as_agreement(client):
     admin = await _register_admin(client, "spx-safe-agree@example.com")
     _category, spec, product = await _setup(

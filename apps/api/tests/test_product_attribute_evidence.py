@@ -347,6 +347,84 @@ async def test_verify_requires_admin(client):
 
 
 @pytest.mark.asyncio
+async def test_verify_rejects_evidence_below_confidence_threshold(client):
+    """P0 safety guard: evidence with confidence < MIN_VERIFIABLE_CONFIDENCE
+    (0.45) must never become VERIFIED, regardless of who attempts it."""
+    user = await _register_verified(client, "pae-verify-lowconf-user@example.com")
+    admin = await _register_admin(client, "pae-verify-lowconf-admin@example.com")
+    _category, spec, product = await _setup_product_with_spec(client, user)
+    observation = await _setup_observation(client, user)
+    evidence = await _create_evidence(
+        client,
+        user,
+        product["id"],
+        spec["id"],
+        observation["id"],
+        confidence=0.20,
+        status="extracted",
+    )
+
+    res = await client.post(
+        f"/api/v1/products/attribute-evidence/{evidence['id']}/verify",
+        headers=_auth_headers(admin),
+    )
+    assert res.status_code == 422, res.text
+    assert res.json()["error"]["code"] == "EVIDENCE_CONFIDENCE_TOO_LOW"
+
+    refetch = await client.get(f"/api/v1/products/attribute-evidence/{evidence['id']}")
+    refetched = refetch.json()["data"]
+    assert refetched["status"] == "extracted"
+    assert refetched["verified_by"] is None
+    assert refetched["verified_at"] is None
+
+
+@pytest.mark.asyncio
+async def test_verify_succeeds_at_exact_threshold_boundary(client):
+    """The floor is inclusive: confidence == MIN_VERIFIABLE_CONFIDENCE
+    (0.45) is still verifiable — only strictly-below is blocked."""
+    user = await _register_verified(client, "pae-verify-boundary-user@example.com")
+    admin = await _register_admin(client, "pae-verify-boundary-admin@example.com")
+    _category, spec, product = await _setup_product_with_spec(client, user)
+    observation = await _setup_observation(client, user)
+    evidence = await _create_evidence(
+        client, user, product["id"], spec["id"], observation["id"], confidence=0.45
+    )
+
+    res = await client.post(
+        f"/api/v1/products/attribute-evidence/{evidence['id']}/verify",
+        headers=_auth_headers(admin),
+    )
+    assert res.status_code == 200, res.text
+    verified = res.json()["data"]
+    assert verified["status"] == "verified"
+    assert verified["verified_by"] == admin["user"]["id"]
+    assert verified["verified_at"] is not None
+
+
+@pytest.mark.asyncio
+async def test_reject_still_works_on_low_confidence_evidence(client):
+    """The confidence guard applies only to verify — reject remains
+    available on low-confidence/ambiguous evidence exactly as before,
+    since it is how a human documents why an unreliable claim should
+    never be revisited."""
+    user = await _register_verified(client, "pae-reject-lowconf-user@example.com")
+    admin = await _register_admin(client, "pae-reject-lowconf-admin@example.com")
+    _category, spec, product = await _setup_product_with_spec(client, user)
+    observation = await _setup_observation(client, user)
+    evidence = await _create_evidence(
+        client, user, product["id"], spec["id"], observation["id"], confidence=0.20
+    )
+
+    res = await client.post(
+        f"/api/v1/products/attribute-evidence/{evidence['id']}/reject",
+        json={"note": "Confidence too low to trust — multiple conflicting occurrences."},
+        headers=_auth_headers(admin),
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["data"]["status"] == "rejected"
+
+
+@pytest.mark.asyncio
 async def test_reject_evidence_marks_rejected_and_preserves_row(client):
     user = await _register_verified(client, "pae-reject-user@example.com")
     admin = await _register_admin(client, "pae-reject-admin@example.com")
@@ -400,6 +478,28 @@ async def test_apply_requires_verified_evidence(client):
     _category, spec, product = await _setup_product_with_spec(client, user)
     observation = await _setup_observation(client, user)
     evidence = await _create_evidence(client, user, product["id"], spec["id"], observation["id"])
+
+    res = await client.post(
+        f"/api/v1/products/attribute-evidence/{evidence['id']}/apply",
+        headers=_auth_headers(admin),
+    )
+    assert res.status_code == 422
+    assert res.json()["error"]["code"] == "NOT_VERIFIED"
+
+
+@pytest.mark.asyncio
+async def test_apply_still_blocked_when_verify_was_never_reached(client):
+    """Low-confidence evidence that was never (and, per the P0 guard,
+    can never be) verified is still correctly rejected by apply's own,
+    unmodified NOT_VERIFIED guard — the two guards are independent and
+    both hold."""
+    user = await _register_verified(client, "pae-apply-lowconf-user@example.com")
+    admin = await _register_admin(client, "pae-apply-lowconf-admin@example.com")
+    _category, spec, product = await _setup_product_with_spec(client, user)
+    observation = await _setup_observation(client, user)
+    evidence = await _create_evidence(
+        client, user, product["id"], spec["id"], observation["id"], confidence=0.20
+    )
 
     res = await client.post(
         f"/api/v1/products/attribute-evidence/{evidence['id']}/apply",

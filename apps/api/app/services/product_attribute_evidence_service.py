@@ -44,8 +44,10 @@ from app.services import audit_service, provenance_service
 __all__ = [
     "AlreadyVerifiedError",
     "EmptyValueError",
+    "EvidenceConfidenceTooLowError",
     "EvidenceNotReviewableStateError",
     "EvidenceNotVerifiedError",
+    "MIN_VERIFIABLE_CONFIDENCE",
     "ProductNotFoundForEvidenceError",
     "RawObservationNotFoundForEvidenceError",
     "SpecificationNotFoundForEvidenceError",
@@ -58,6 +60,22 @@ __all__ = [
     "total_pages",
     "verify_product_attribute_evidence",
 ]
+
+# P0 verification safety guard (approved design audit, see this
+# module's own docstring's DATA TRUST RULE): the four fixed confidence
+# tiers in app.extraction.confidence are 0.90/0.70/0.45/0.20, and 0.20
+# ("TIER_AMBIGUOUS") is reachable ONLY when a deterministic extraction
+# found multiple, disagreeing occurrences of the same specification in
+# one document — never for any other reason (see that module's own
+# compute_confidence, whose ambiguous branch is checked first and
+# unconditionally returns 0.20). 0.45 ("TIER_WEAK") is therefore the
+# correct floor: it blocks exactly the self-contradicting tier while
+# leaving every other existing tier (including a merely weakly-matched
+# but non-contradictory reading) verifiable by a human as before.
+# Deliberately a plain module-level float, not a per-specification or
+# per-category setting — this is a global safety floor on what may
+# ever become VERIFIED, not an extraction-tuning knob.
+MIN_VERIFIABLE_CONFIDENCE = 0.45
 
 
 class ProductNotFoundForEvidenceError(Exception):
@@ -83,6 +101,19 @@ class RawObservationNotFoundForEvidenceError(Exception):
 class AlreadyVerifiedError(Exception):
     """Mirrors provenance_service.AlreadyVerifiedError — verification is
     a one-time, attributable action, not idempotent."""
+
+
+class EvidenceConfidenceTooLowError(Exception):
+    """Raised when verify is attempted on evidence whose confidence is
+    below MIN_VERIFIABLE_CONFIDENCE — see that constant's own docstring.
+    Not a terminal state: the row is left exactly as it was (still
+    EXTRACTED/OBSERVED/CLAIMED, still reject-able, still fully queryable
+    for its extraction_context). A human who independently confirms the
+    correct value submits a fresh, higher-confidence evidence claim via
+    the existing create endpoint — this guard blocks only the
+    unreliable row itself from ever becoming the vehicle for
+    canonicalization, never the (product, specification) attribute as a
+    whole."""
 
 
 class EvidenceNotReviewableStateError(Exception):
@@ -283,9 +314,22 @@ async def verify_product_attribute_evidence(
     real, attributable verified_by, never reachable automatically,
     regardless of extraction_method (an ai_assisted row is verified
     through this exact same call, with no shortcut).
+
+    P0 safety guard (approved design audit): also refuses evidence
+    whose confidence is below MIN_VERIFIABLE_CONFIDENCE — see that
+    constant's own docstring for why a numeric floor, not
+    extraction_context.ambiguous, is the enforcement condition, and why
+    0.45 is the correct cut line. Checked after the AlreadyVerifiedError
+    guard (re-verifying already-VERIFIED evidence is always a 409,
+    regardless of its confidence) and before any state is mutated.
     """
     if evidence.status == ProvenanceStatus.VERIFIED:
         raise AlreadyVerifiedError(str(evidence.id))
+    if evidence.confidence < MIN_VERIFIABLE_CONFIDENCE:
+        raise EvidenceConfidenceTooLowError(
+            f"ProductAttributeEvidence {evidence.id} has confidence {evidence.confidence!r}, "
+            f"below the minimum verifiable confidence {MIN_VERIFIABLE_CONFIDENCE!r}."
+        )
 
     evidence.status = ProvenanceStatus.VERIFIED
     evidence.verified_by = verified_by
