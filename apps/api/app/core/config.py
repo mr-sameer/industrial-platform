@@ -46,6 +46,22 @@ class Settings(BaseSettings):
     api_cors_origins: str = Field(default="http://localhost:3000")
 
     # ---- Database ----
+    # These `localhost:5432` defaults are the bare-metal/native-Postgres
+    # value ONLY (same value as apps/api/.env.example) — they are never
+    # what a Docker-run API actually uses: docker-compose.yml's `api`
+    # service sets DATABASE_URL/DATABASE_URL_SYNC explicitly to
+    # `postgres:5432` (the Compose network's own service hostname) via
+    # its `environment:` block, which always wins over both this default
+    # and root .env's own value (confirmed identical: `postgres:5432`).
+    # A real incident this documents: an ad-hoc script run bare (`python
+    # scripts/...`, no apps/api/.env present) silently falls back to
+    # THIS default and lands on whatever is listening on the host's
+    # localhost:5432 — which, if a native/Homebrew Postgres is also
+    # running, is that instance, not the canonical Docker database, with
+    # no error of any kind. If you need the canonical Docker-hosted
+    # database from outside a container, use `docker exec platform-postgres
+    # psql ...` or `docker compose exec api ...` — never assume this
+    # default reaches it.
     database_url: str = Field(
         default="postgresql+asyncpg://platform_user:change_me_locally@localhost:5432/industrial_platform"
     )
