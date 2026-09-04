@@ -20,6 +20,24 @@ Every row this module creates uses extraction_method=RULE_BASED and
 status=EXTRACTED. Nothing here ever calls verify/reject/apply, and
 nothing here ever touches ProductAttribute directly — the existing
 human-review lifecycle is entirely untouched.
+
+OCR INTEGRATION (approved OCR -> deterministic extraction -> evidence
+milestone): run_ocr_extraction below is the OCR-derived counterpart to
+run_extraction — it reuses the EXACT SAME matching logic
+(_collect_readings, _reconcile, compute_confidence — none of it
+duplicated or forked) against a single app.models.ocr_result.OCRResult's
+text instead of raw_content.pages, and creates evidence through the
+existing, unmodified
+product_attribute_evidence_service.create_ocr_derived_attribute_evidence
+(OCR V1 foundation milestone) instead of create_attribute_evidence.
+Deliberately does NOT attempt to repair or "correct" OCR text in any
+way (see that module's own docstring on the real CRI 2024 OCR failure
+modes this was measured against: decimal-point loss, degree/superscript
+corruption, colon substitution, label/value separation, missing table
+values, model-number corruption) — a line that doesn't safely parse
+under the SAME app.extraction.validation rules native text uses either
+produces no candidate or a low-confidence one the existing 0.45 guard
+already blocks; nothing here guesses a "probably correct" value.
 """
 
 import uuid
@@ -41,13 +59,20 @@ from app.models.product_specification import ProductSpecification, Specification
 from app.models.provenance_record import ExtractionMethod, ProvenanceStatus
 from app.models.specification_alias import SpecificationAlias
 from app.schemas.product_attribute_evidence import ProductAttributeEvidenceCreate
-from app.services import product_attribute_evidence_service, product_service, provenance_service
+from app.services import (
+    ocr_result_service,
+    product_attribute_evidence_service,
+    product_service,
+    provenance_service,
+)
 
 __all__ = [
     "InvalidDocumentStructureError",
+    "OCRResultNotFoundForExtractionError",
     "ProductNotFoundForExtractionError",
     "RawObservationNotFoundForExtractionError",
     "run_extraction",
+    "run_ocr_extraction",
 ]
 
 _RELATIVE_TOLERANCE = 0.005
@@ -74,6 +99,10 @@ class InvalidDocumentStructureError(Exception):
     app.collectors.document_extraction_adapter's own raw_content
     contract, which this check mirrors without importing that module
     (this milestone must not modify or couple to Checkpoint 1's code)."""
+
+
+class OCRResultNotFoundForExtractionError(Exception):
+    pass
 
 
 @dataclass(frozen=True)
@@ -134,14 +163,31 @@ async def _find_existing_evidence(
     product_id: uuid.UUID,
     specification_id: uuid.UUID,
     raw_observation_id: uuid.UUID,
+    ocr_result_id: uuid.UUID | None = None,
 ) -> ProductAttributeEvidence | None:
-    result = await db.execute(
-        select(ProductAttributeEvidence).where(
-            ProductAttributeEvidence.product_id == product_id,
-            ProductAttributeEvidence.specification_id == specification_id,
-            ProductAttributeEvidence.raw_observation_id == raw_observation_id,
-        )
-    )
+    """
+    ocr_result_id defaults to None (the native-extraction case, unchanged
+    call sites, unchanged behavior) and is explicitly scoped either way —
+    IS NULL for native, == ocr_result_id for OCR — mirroring
+    product_attribute_evidence's own uq_pae_source_manual/uq_pae_source_ocr
+    partial-index split exactly (OCR V1 foundation milestone). Without
+    this, a native lookup could accidentally match an unrelated OCR-
+    derived row for the same (product, specification, raw_observation)
+    triple (raw_observation_id is identical for both — it always points
+    at the same original document) and vice versa — see the OCR
+    integration milestone's own "native and OCR evidence coexist"
+    requirement.
+    """
+    conditions = [
+        ProductAttributeEvidence.product_id == product_id,
+        ProductAttributeEvidence.specification_id == specification_id,
+        ProductAttributeEvidence.raw_observation_id == raw_observation_id,
+    ]
+    if ocr_result_id is None:
+        conditions.append(ProductAttributeEvidence.ocr_result_id.is_(None))
+    else:
+        conditions.append(ProductAttributeEvidence.ocr_result_id == ocr_result_id)
+    result = await db.execute(select(ProductAttributeEvidence).where(*conditions))
     return result.scalar_one_or_none()
 
 
@@ -206,24 +252,22 @@ def _reconcile(
     return representative, occurrences, ambiguous
 
 
-async def run_extraction(
-    db: AsyncSession, *, product_id: uuid.UUID, raw_observation_id: uuid.UUID
-) -> ExtractionRunResult:
-    product = await product_service.get_product(db, product_id)
-    if product is None:
-        raise ProductNotFoundForExtractionError(str(product_id))
-
-    observation = await provenance_service.get_raw_observation(db, raw_observation_id)
-    if observation is None:
-        raise RawObservationNotFoundForExtractionError(str(raw_observation_id))
-
-    pages = _extract_pages(observation.raw_content)
-
-    specifications = await product_service.list_specifications_for_category(db, product.category_id)
-    spec_by_id = {spec.id: spec for spec in specifications}
-    aliases_by_spec = await _load_aliases(db, list(spec_by_id))
-    index = label_matching.build_label_index(specifications, aliases_by_spec)
-
+def _collect_readings(
+    pages: list[_PageText],
+    specifications: list[ProductSpecification],
+    index: label_matching.LabelIndex,
+) -> tuple[dict[uuid.UUID, list[_RawReading]], list[RejectedCandidate], dict[str, set[uuid.UUID]]]:
+    """
+    The ENTIRE matching algorithm — line splitting, label resolution,
+    per-datatype validation — shared byte-for-byte between run_extraction
+    (native text) and run_ocr_extraction (OCR text). Deliberately takes
+    only `pages: list[_PageText]`, never a RawObservation or an
+    OCRResult: this function has no idea, and must never need to know,
+    where the text came from. That symmetry is what guarantees the OCR
+    integration milestone's own requirement that native-text extraction
+    behavior is unchanged — this is the exact code that used to be
+    inline in run_extraction, moved here verbatim, not rewritten.
+    """
     readings_by_spec: dict[uuid.UUID, list[_RawReading]] = defaultdict(list)
     rejected: list[RejectedCandidate] = []
     ambiguous_configs: dict[str, set[uuid.UUID]] = {}
@@ -265,6 +309,29 @@ async def run_extraction(
                     parsed=outcome,
                 )
             )
+
+    return readings_by_spec, rejected, ambiguous_configs
+
+
+async def run_extraction(
+    db: AsyncSession, *, product_id: uuid.UUID, raw_observation_id: uuid.UUID
+) -> ExtractionRunResult:
+    product = await product_service.get_product(db, product_id)
+    if product is None:
+        raise ProductNotFoundForExtractionError(str(product_id))
+
+    observation = await provenance_service.get_raw_observation(db, raw_observation_id)
+    if observation is None:
+        raise RawObservationNotFoundForExtractionError(str(raw_observation_id))
+
+    pages = _extract_pages(observation.raw_content)
+
+    specifications = await product_service.list_specifications_for_category(db, product.category_id)
+    spec_by_id = {spec.id: spec for spec in specifications}
+    aliases_by_spec = await _load_aliases(db, list(spec_by_id))
+    index = label_matching.build_label_index(specifications, aliases_by_spec)
+
+    readings_by_spec, rejected, ambiguous_configs = _collect_readings(pages, specifications, index)
 
     created: list[uuid.UUID] = []
     existing: list[uuid.UUID] = []
@@ -308,6 +375,116 @@ async def run_extraction(
         )
         evidence, _conflict = await product_attribute_evidence_service.create_attribute_evidence(
             db, payload
+        )
+        created.append(evidence.id)
+
+    return ExtractionRunResult(
+        created=created,
+        existing=existing,
+        rejected=rejected,
+        ambiguous_configuration=[
+            AmbiguousConfigurationEntry(label=label, specification_ids=sorted(spec_ids, key=str))
+            for label, spec_ids in ambiguous_configs.items()
+        ],
+    )
+
+
+async def run_ocr_extraction(
+    db: AsyncSession,
+    *,
+    product_id: uuid.UUID,
+    raw_observation_id: uuid.UUID,
+    ocr_result_id: uuid.UUID,
+) -> ExtractionRunResult:
+    """
+    The OCR-derived counterpart to run_extraction — see this module's
+    own "OCR INTEGRATION" docstring section. Reads a SINGLE OCRResult's
+    text as one page (page_number = ocr_result.page_number), runs it
+    through the IDENTICAL _collect_readings/_reconcile/compute_confidence
+    pipeline native extraction uses, and creates evidence through
+    product_attribute_evidence_service.create_ocr_derived_attribute_evidence
+    (unmodified) — which itself applies the OCR confidence ceiling
+    (min(extraction_confidence, mapped_ocr_confidence)) before the row
+    is ever created, so a low-confidence OCR page can only ever produce
+    evidence the existing MIN_VERIFIABLE_CONFIDENCE guard already blocks.
+
+    raw_observation_id/ocr_result_id consistency is checked HERE,
+    unconditionally, before any matching runs — not deferred to evidence
+    creation (create_ocr_derived_attribute_evidence's own equivalent
+    check would never fire for a page with zero valid readings, silently
+    accepting a caller bug). Reuses the existing
+    product_attribute_evidence_service.RawObservationOcrResultMismatchError,
+    not a new error type.
+    """
+    product = await product_service.get_product(db, product_id)
+    if product is None:
+        raise ProductNotFoundForExtractionError(str(product_id))
+
+    observation = await provenance_service.get_raw_observation(db, raw_observation_id)
+    if observation is None:
+        raise RawObservationNotFoundForExtractionError(str(raw_observation_id))
+
+    ocr_result = await ocr_result_service.get_ocr_result(db, ocr_result_id)
+    if ocr_result is None:
+        raise OCRResultNotFoundForExtractionError(str(ocr_result_id))
+    if ocr_result.raw_observation_id != raw_observation_id:
+        raise product_attribute_evidence_service.RawObservationOcrResultMismatchError(
+            f"raw_observation_id {raw_observation_id} does not match ocr_result "
+            f"{ocr_result_id}'s own raw_observation_id {ocr_result.raw_observation_id}."
+        )
+
+    pages = [_PageText(number=ocr_result.page_number, text=ocr_result.text)]
+
+    specifications = await product_service.list_specifications_for_category(db, product.category_id)
+    spec_by_id = {spec.id: spec for spec in specifications}
+    aliases_by_spec = await _load_aliases(db, list(spec_by_id))
+    index = label_matching.build_label_index(specifications, aliases_by_spec)
+
+    readings_by_spec, rejected, ambiguous_configs = _collect_readings(pages, specifications, index)
+
+    created: list[uuid.UUID] = []
+    existing: list[uuid.UUID] = []
+
+    for specification_id, readings in readings_by_spec.items():
+        specification = spec_by_id[specification_id]
+        representative, occurrences, ambiguous = _reconcile(specification, readings)
+        extraction_confidence = compute_confidence(
+            match_type=representative.match_type,
+            match_style=representative.style,
+            unit_resolved=representative.parsed.unit_resolved,
+            ambiguous=ambiguous,
+        )
+        extraction_context: dict[str, object] = {
+            "page": representative.page,
+            "snippet": representative.snippet,
+            "matched_label": representative.matched_label,
+            "match_type": representative.match_type,
+            "match_style": representative.style,
+            "extraction_rule": representative.extraction_rule,
+            "occurrences": occurrences,
+            "ambiguous": ambiguous,
+        }
+
+        pre_existing = await _find_existing_evidence(
+            db, product_id, specification_id, raw_observation_id, ocr_result_id=ocr_result_id
+        )
+        if pre_existing is not None:
+            existing.append(pre_existing.id)
+            continue
+
+        (
+            evidence,
+            _conflict,
+        ) = await product_attribute_evidence_service.create_ocr_derived_attribute_evidence(
+            db,
+            product_id=product_id,
+            specification_id=specification_id,
+            raw_observation_id=raw_observation_id,
+            ocr_result_id=ocr_result_id,
+            value_observed=representative.parsed.observed_value,
+            extraction_method=ExtractionMethod.RULE_BASED,
+            extraction_confidence=extraction_confidence,
+            extraction_context=extraction_context,
         )
         created.append(evidence.id)
 
