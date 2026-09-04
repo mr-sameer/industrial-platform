@@ -1,4 +1,8 @@
-import type { ProductCategory } from "@platform/shared-types";
+import type {
+  ProductCategory,
+  ProductSpecification,
+  RequirementSpecificationCriterionInput,
+} from "@platform/shared-types";
 
 /**
  * The Requirement Object — per Phase 3B's own governing rule: "The
@@ -49,6 +53,13 @@ export interface RequirementObject {
   quantity: RequirementField<string>;
   budget: RequirementField<string>;
   timeline: RequirementField<string>;
+  // Numeric technical constraints ("motor power at least 3 kW") —
+  // see extractTechnicalCriteria() below. Unlike every other field on
+  // this object, these are never accumulated turn-by-turn: they
+  // require the buyer's category's REAL specifications (an async
+  // fetch), so they're computed once, at search time, from rawQuery
+  // only — always [] until then, never populated speculatively.
+  technicalCriteria: RequirementSpecificationCriterionInput[];
   overallConfidence: number; // 0-100, see computeConfidence()
 }
 
@@ -317,6 +328,7 @@ export function newRequirementObject(rawQuery: string): RequirementObject {
     quantity: { value: null, confidence: "missing" },
     budget: { value: null, confidence: "missing" },
     timeline: { value: null, confidence: "missing" },
+    technicalCriteria: [],
     overallConfidence: 0,
   };
 }
@@ -674,4 +686,149 @@ export function resolveCategoryId(categories: ProductCategory[], text: string): 
     }
   }
   return best?.id ?? null;
+}
+
+// --------------------------------------------------------------------
+// Technical criteria extraction (numeric specs only) — first MVP.
+//
+// Deterministic, explicit-vocabulary extraction of a numeric technical
+// constraint ("motor power at least 3 kW") into a real
+// RequirementSpecificationCriterionInput — the identical "ask, don't
+// guess" discipline as every extractor above: a criterion is produced
+// ONLY when a recognized specification phrase, a recognized operator
+// phrase, a number, AND that specification's OWN configured unit are
+// ALL explicitly present. No component is ever inferred; there is no
+// default operator (a bare "3 kW motor" with no comparison word
+// produces nothing, not an assumed "="), and no unit conversion of any
+// kind (HP is never read as kW, L/min is never read as m3/hr, ft is
+// never read as m — an unsupported/mismatched unit means no criterion,
+// never a converted one).
+//
+// Scoped to exactly the three NUMBER-datatype specs this pilot has
+// today (Motor Power, Flow Rate, Head) — Pump Type is TEXT and
+// deliberately excluded, left for a later explicit-equality design
+// (see this module's own completion report). Only fires against a
+// specification the caller actually passed in (the category's REAL,
+// backend-fetched specs — see lib/products.ts's listCategorySpecifications),
+// never a hardcoded/guessed specification_id.
+// --------------------------------------------------------------------
+
+const GTE_OPERATOR_PHRASES = ["at least", "minimum", "greater than", "more than", "above"];
+const LTE_OPERATOR_PHRASES = ["at most", "maximum", "less than", "fewer than", "below"];
+
+// Explicit, finite alias table — deliberately small, same philosophy
+// as KNOWN_COUNTRIES/KNOWN_CITIES/KNOWN_CERTIFICATIONS above. Keyed by
+// the real ProductSpecification.name this pilot's Industrial Pumps
+// category actually has. "discharge" is included for Flow Rate only —
+// a real, demonstrated industry synonym for this exact category, not
+// a guess: the real KSB India brochure this pilot sourced Motor Power
+// from (ksbindia.in Submersible-Pumps.pdf, page 4, Selection Table)
+// literally labels its flow-rate column "Discharge (m3/hr.)".
+const TECHNICAL_SPEC_ALIASES: Record<string, string[]> = {
+  "Motor Power": ["motor power", "motor capacity", "power of motor"],
+  "Flow Rate": ["flow rate", "discharge"],
+  Head: ["head", "total head"],
+};
+
+// Only the exact unit text(s) each specification is genuinely allowed
+// to be stated in — never HP for Motor Power, never L/min for Flow
+// Rate, never ft for Head. Membership is checked against the
+// specification's REAL, backend-fetched `unit` value below; a
+// specification whose real unit isn't in this list is never matched
+// at all, rather than matched against the wrong unit.
+const TECHNICAL_SPEC_UNIT_VARIANTS: Record<string, string[]> = {
+  "Motor Power": ["kW"],
+  "Flow Rate": ["m³/hr", "m3/hr"],
+  Head: ["m"],
+};
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+const TECHNICAL_NUMBER_PATTERN = "\\d+(?:\\.\\d+)?";
+
+/**
+ * Extracts numeric technical criteria from free text against the
+ * REAL specifications of the buyer's already-resolved category.
+ * Returns [] whenever the category has none of the supported specs,
+ * or the buyer's phrasing doesn't explicitly satisfy every required
+ * component (spec phrase + operator phrase + number + matching unit)
+ * for at least one criterion — never a partial/best-effort criterion.
+ * At most one criterion per specification (mirrors the backend's own
+ * "duplicate specification_id" rejection, app.services.requirement_service).
+ */
+export function extractTechnicalCriteria(
+  text: string,
+  specifications: ProductSpecification[]
+): RequirementSpecificationCriterionInput[] {
+  const criteria: RequirementSpecificationCriterionInput[] = [];
+  const matchedRanges: Array<[number, number]> = [];
+
+  for (const spec of specifications) {
+    if (spec.datatype !== "number") continue; // never fire against a non-numeric spec, even on a name/alias coincidence
+    const aliases = TECHNICAL_SPEC_ALIASES[spec.name];
+    const unitVariants = TECHNICAL_SPEC_UNIT_VARIANTS[spec.name];
+    if (!aliases || !unitVariants) continue; // not one of the 3 supported specs
+
+    // The specification's OWN configured unit must itself be one this
+    // parser recognizes for it — a real spec configured in an
+    // unsupported unit is skipped entirely, never matched anyway.
+    if (!spec.unit || !unitVariants.some((u) => u.toLowerCase() === spec.unit!.toLowerCase())) {
+      continue;
+    }
+
+    const unitAlternation = unitVariants.map(escapeRegExp).join("|");
+    let foundForThisSpec = false;
+
+    for (const alias of aliases) {
+      if (foundForThisSpec) break;
+      const aliasPattern = escapeRegExp(alias);
+
+      for (const [phrases, operator] of [
+        [GTE_OPERATOR_PHRASES, "gte"],
+        [LTE_OPERATOR_PHRASES, "lte"],
+      ] as const) {
+        if (foundForThisSpec) break;
+
+        for (const phrase of phrases) {
+          const opPattern = escapeRegExp(phrase);
+          // Order A: "<spec> [of] <operator> <number> <unit>"
+          //   e.g. "motor power above 5 kW", "head of at least 50 m"
+          // Order B: "<operator> <number> <unit> <spec>"
+          //   e.g. "at least 3 kW motor power"
+          const patternA = new RegExp(
+            `\\b${aliasPattern}\\b\\s*(?:of\\s+)?${opPattern}\\s+(${TECHNICAL_NUMBER_PATTERN})\\s*(?:${unitAlternation})\\b`,
+            "i"
+          );
+          const patternB = new RegExp(
+            `\\b${opPattern}\\s+(${TECHNICAL_NUMBER_PATTERN})\\s*(?:${unitAlternation})\\s+${aliasPattern}\\b`,
+            "i"
+          );
+
+          for (const pattern of [patternA, patternB]) {
+            const match = pattern.exec(text);
+            if (!match) continue;
+            const start = match.index;
+            const end = start + match[0].length;
+            // Non-overlapping matches only — keeps multi-criterion
+            // support simple, never a clever conjunction/comma parse.
+            if (matchedRanges.some(([s, e]) => start < e && end > s)) continue;
+
+            criteria.push({
+              specification_id: spec.id,
+              operator,
+              value: Number(match[1]!),
+            });
+            matchedRanges.push([start, end]);
+            foundForThisSpec = true;
+            break;
+          }
+          if (foundForThisSpec) break;
+        }
+      }
+    }
+  }
+
+  return criteria;
 }

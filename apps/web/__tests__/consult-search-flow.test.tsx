@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import ConsultPage from "@/app/consult/page";
-import { listCategories } from "@/lib/products";
+import { listCategories, listCategorySpecifications } from "@/lib/products";
 import { createRequirement, getRequirementMatches } from "@/lib/requirements-api";
 
 /**
@@ -49,6 +49,7 @@ vi.mock("next/navigation", () => ({
 
 vi.mock("@/lib/products", () => ({
   listCategories: vi.fn(),
+  listCategorySpecifications: vi.fn(),
 }));
 
 vi.mock("@/lib/requirements-api", () => ({
@@ -88,6 +89,16 @@ describe("Consult search flow (Module 7A-1/7A-2 integration)", () => {
     vi.mocked(listCategories).mockResolvedValue({
       success: true,
       data: [{ id: "cat-1", name: "custom parts", slug: "custom-parts", parent_id: null }],
+      meta: okMeta,
+    });
+    // No technical specification recognized by extractTechnicalCriteria
+    // in this file's fixtures ("custom parts" isn't the Industrial
+    // Pumps pilot) — an empty real specs response is the honest
+    // behavior, and keeps every pre-existing assertion of
+    // `criteria: []` in this file correct unchanged.
+    vi.mocked(listCategorySpecifications).mockResolvedValue({
+      success: true,
+      data: [],
       meta: okMeta,
     });
   });
@@ -317,5 +328,58 @@ describe("Consult search flow (Module 7A-1/7A-2 integration)", () => {
     // mocked modules here, so no real fetch should ever fire from the
     // search step itself.
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("extracts a real technical criterion from buyer text and reaches the backend payload — the first MVP technical-criteria acceptance test", async () => {
+    const MOTOR_POWER_ID = "spec-motor-power-real-id";
+    vi.mocked(listCategories).mockResolvedValue({
+      success: true,
+      data: [{ id: "cat-pumps", name: "Industrial Pumps", slug: "industrial-pumps", parent_id: null }],
+      meta: okMeta,
+    });
+    vi.mocked(listCategorySpecifications).mockResolvedValue({
+      success: true,
+      data: [
+        { id: MOTOR_POWER_ID, category_id: "cat-pumps", name: "Motor Power", unit: "kW", datatype: "number", enum_options: null, required: false },
+        { id: "spec-flow-rate", category_id: "cat-pumps", name: "Flow Rate", unit: "m3/hr", datatype: "number", enum_options: null, required: false },
+        { id: "spec-head", category_id: "cat-pumps", name: "Head", unit: "m", datatype: "number", enum_options: null, required: false },
+        { id: "spec-pump-type", category_id: "cat-pumps", name: "Pump Type", unit: null, datatype: "text", enum_options: null, required: false },
+      ],
+      meta: okMeta,
+    });
+    vi.mocked(createRequirement).mockResolvedValue({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      success: true, data: { id: "req-1" } as any, meta: okMeta,
+    });
+    vi.mocked(getRequirementMatches).mockResolvedValue({
+      success: true,
+      data: {
+        requirement_id: "req-1",
+        status: "computed",
+        total_candidates_considered: 0,
+        more_candidates_may_exist: false,
+        excluded_for_hard_criteria: 0,
+        returned_count: 0,
+        matches: [],
+      },
+      meta: okMeta,
+    });
+
+    render(<ConsultPage />);
+    const input = screen.getByLabelText("Your message");
+    fireEvent.change(input, { target: { value: "I need an industrial pump with at least 3 kW motor power" } });
+    fireEvent.submit(input.closest("form")!);
+    // No role keyword ("manufacturer"/"supplier"/...) in this sentence,
+    // so intent is the first clarifying question, same chip set
+    // driveToSummary() uses elsewhere in this file.
+    fireEvent.click(screen.getByText("Manufacturer"));
+    fireEvent.click(screen.getByText("India"));
+    fireEvent.click(screen.getByText("None"));
+    fireEvent.click(screen.getByText("Search now"));
+
+    await waitFor(() => expect(createRequirement).toHaveBeenCalled());
+    const [payload] = vi.mocked(createRequirement).mock.calls[0]!;
+    expect(payload.product_category_id).toBe("cat-pumps");
+    expect(payload.criteria).toEqual([{ specification_id: MOTOR_POWER_ID, operator: "gte", value: 3 }]);
   });
 });

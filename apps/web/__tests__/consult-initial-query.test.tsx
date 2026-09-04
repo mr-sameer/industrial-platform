@@ -2,7 +2,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import ConsultPage from "@/app/consult/page";
-import { listCategories } from "@/lib/products";
+import { listCategories, listCategorySpecifications } from "@/lib/products";
 import { createRequirement, getRequirementMatches } from "@/lib/requirements-api";
 
 /**
@@ -40,6 +40,7 @@ vi.mock("next/navigation", () => ({
 
 vi.mock("@/lib/products", () => ({
   listCategories: vi.fn(),
+  listCategorySpecifications: vi.fn(),
 }));
 
 vi.mock("@/lib/requirements-api", () => ({
@@ -65,6 +66,14 @@ describe("Consult initial ?q= handoff from the homepage search bar", () => {
     vi.mocked(listCategories).mockResolvedValue({
       success: true,
       data: [{ id: "cat-heater", name: "Room Heater", slug: "room-heater", parent_id: null }],
+      meta: okMeta,
+    });
+    // Room Heater has no numeric pilot specs — an empty real response
+    // is the honest fixture; extractTechnicalCriteria then correctly
+    // produces no criteria, preserving this file's existing behavior.
+    vi.mocked(listCategorySpecifications).mockResolvedValue({
+      success: true,
+      data: [],
       meta: okMeta,
     });
   });

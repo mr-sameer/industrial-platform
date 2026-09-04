@@ -22,11 +22,12 @@ import { ThinkingIndicator } from "@/components/consult/ThinkingIndicator";
 import { useAuth } from "@/contexts/AuthContext";
 import { cn } from "@/lib/cn";
 import { autoGrowTextarea, COMPOSER_CONTAINER_CLASSNAME, COMPOSER_TEXTAREA_CLASSNAME, isComposerSubmitKey } from "@/lib/composer";
-import { listCategories } from "@/lib/products";
+import { listCategories, listCategorySpecifications } from "@/lib/products";
 import {
   applyClarifyingAnswer,
   computeConfidence,
   extractFromText,
+  extractTechnicalCriteria,
   newRequirementObject,
   nextClarifyingField,
   resolveCategoryId,
@@ -323,6 +324,22 @@ function ConsultForm() {
         ? resolveCategoryId(categoriesResult.data, requirement.productOrCategory.value)
         : null;
 
+      // Technical criteria (Motor Power / Flow Rate / Head — see
+      // lib/requirement.ts's extractTechnicalCriteria) need the
+      // category's REAL specifications, only knowable once a category
+      // has actually resolved; no category means no criteria, never a
+      // guess. A specs-fetch failure fails open to no criteria too —
+      // the search itself still proceeds on trust/location/certification
+      // signals alone, exactly as it always has.
+      let technicalCriteria: ReturnType<typeof extractTechnicalCriteria> = [];
+      if (productCategoryId) {
+        const specsResult = await listCategorySpecifications(productCategoryId);
+        if (specsResult.success) {
+          technicalCriteria = extractTechnicalCriteria(requirement.rawQuery, specsResult.data);
+        }
+      }
+      setRequirement((prev) => (prev ? { ...prev, technicalCriteria } : prev));
+
       const created = await createRequirement(
         {
           raw_query: requirement.rawQuery,
@@ -334,7 +351,7 @@ function ConsultForm() {
           budget: requirement.budget.value,
           timeline: requirement.timeline.value,
           extraction_confidence: requirement.overallConfidence / 100,
-          criteria: [],
+          criteria: technicalCriteria,
         },
         accessToken
       );
