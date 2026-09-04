@@ -32,14 +32,15 @@ from datetime import UTC, datetime
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.extraction.ocr_confidence import apply_ocr_confidence_ceiling
 from app.models.data_conflict import ConflictStatus, DataConflict
 from app.models.product import Product
 from app.models.product_attribute import ProductAttribute
 from app.models.product_attribute_evidence import ProductAttributeEvidence
 from app.models.product_specification import ProductSpecification
-from app.models.provenance_record import ProvenanceStatus
+from app.models.provenance_record import ExtractionMethod, ProvenanceStatus
 from app.schemas.product_attribute_evidence import ProductAttributeEvidenceCreate
-from app.services import audit_service, provenance_service
+from app.services import audit_service, ocr_result_service, provenance_service
 
 __all__ = [
     "AlreadyVerifiedError",
@@ -48,12 +49,15 @@ __all__ = [
     "EvidenceNotReviewableStateError",
     "EvidenceNotVerifiedError",
     "MIN_VERIFIABLE_CONFIDENCE",
+    "OCRResultNotFoundForEvidenceError",
     "ProductNotFoundForEvidenceError",
     "RawObservationNotFoundForEvidenceError",
+    "RawObservationOcrResultMismatchError",
     "SpecificationNotFoundForEvidenceError",
     "SpecificationNotInProductCategoryError",
     "apply_reviewed_attribute_to_product",
     "create_attribute_evidence",
+    "create_ocr_derived_attribute_evidence",
     "get_attribute_evidence",
     "list_attribute_evidence",
     "reject_product_attribute_evidence",
@@ -96,6 +100,20 @@ class SpecificationNotInProductCategoryError(Exception):
 
 class RawObservationNotFoundForEvidenceError(Exception):
     pass
+
+
+class OCRResultNotFoundForEvidenceError(Exception):
+    pass
+
+
+class RawObservationOcrResultMismatchError(Exception):
+    """Raised when the caller's raw_observation_id doesn't match
+    ocr_result.raw_observation_id — see
+    create_ocr_derived_attribute_evidence's own docstring. An OCRResult
+    is always a transformation of ONE specific original document; this
+    guard exists so a caller bug (e.g. an OCRResult accidentally
+    sourced from a different document) can never silently attach
+    evidence to the wrong RawObservation."""
 
 
 class AlreadyVerifiedError(Exception):
@@ -182,6 +200,34 @@ async def _detect_and_flag_conflict(
     return conflict
 
 
+async def _validate_product_and_specification(
+    db: AsyncSession, *, product_id: uuid.UUID, specification_id: uuid.UUID
+) -> tuple[Product, ProductSpecification]:
+    """Shared by create_attribute_evidence and
+    create_ocr_derived_attribute_evidence — extracted verbatim, no
+    behavior change, so both creation paths enforce the identical
+    product-exists / specification-exists / specification-belongs-to-
+    product's-category rule."""
+    product_result = await db.execute(select(Product).where(Product.id == product_id))
+    product = product_result.scalar_one_or_none()
+    if product is None:
+        raise ProductNotFoundForEvidenceError(str(product_id))
+
+    spec_result = await db.execute(
+        select(ProductSpecification).where(ProductSpecification.id == specification_id)
+    )
+    specification = spec_result.scalar_one_or_none()
+    if specification is None:
+        raise SpecificationNotFoundForEvidenceError(str(specification_id))
+    if specification.category_id != product.category_id:
+        raise SpecificationNotInProductCategoryError(
+            f"specification {specification_id} belongs to category "
+            f"{specification.category_id}, not product {product_id}'s category "
+            f"{product.category_id}."
+        )
+    return product, specification
+
+
 async def create_attribute_evidence(
     db: AsyncSession, payload: ProductAttributeEvidenceCreate
 ) -> tuple[ProductAttributeEvidence, DataConflict | None]:
@@ -210,23 +256,9 @@ async def create_attribute_evidence(
             "status must not be 'verified' at creation — use verify_product_attribute_evidence"
         )
 
-    product_result = await db.execute(select(Product).where(Product.id == payload.product_id))
-    product = product_result.scalar_one_or_none()
-    if product is None:
-        raise ProductNotFoundForEvidenceError(str(payload.product_id))
-
-    spec_result = await db.execute(
-        select(ProductSpecification).where(ProductSpecification.id == payload.specification_id)
+    await _validate_product_and_specification(
+        db, product_id=payload.product_id, specification_id=payload.specification_id
     )
-    specification = spec_result.scalar_one_or_none()
-    if specification is None:
-        raise SpecificationNotFoundForEvidenceError(str(payload.specification_id))
-    if specification.category_id != product.category_id:
-        raise SpecificationNotInProductCategoryError(
-            f"specification {payload.specification_id} belongs to category "
-            f"{specification.category_id}, not product {payload.product_id}'s category "
-            f"{product.category_id}."
-        )
 
     observation = await provenance_service.get_raw_observation(db, payload.raw_observation_id)
     if observation is None:
@@ -255,6 +287,105 @@ async def create_attribute_evidence(
         last_observed_at=now,
         extraction_context=payload.extraction_context,
         verification_document_id=payload.verification_document_id,
+    )
+    db.add(evidence)
+    await db.flush()  # evidence.id needed before it can be referenced by a conflict
+
+    conflict = await _detect_and_flag_conflict(db, evidence)
+
+    await db.commit()
+    await db.refresh(evidence)
+    return evidence, conflict
+
+
+async def create_ocr_derived_attribute_evidence(
+    db: AsyncSession,
+    *,
+    product_id: uuid.UUID,
+    specification_id: uuid.UUID,
+    raw_observation_id: uuid.UUID,
+    ocr_result_id: uuid.UUID,
+    value_observed: str,
+    extraction_method: ExtractionMethod,
+    extraction_confidence: float,
+    status: ProvenanceStatus = ProvenanceStatus.EXTRACTED,
+    extraction_context: dict[str, object] | None = None,
+) -> tuple[ProductAttributeEvidence, DataConflict | None]:
+    """
+    The OCR-derived counterpart to create_attribute_evidence — internal
+    service-layer entry point for a future deterministic-extraction
+    pipeline that read its source text from an OCRResult rather than a
+    native PDF text layer. Not exposed via the API in this milestone
+    (see the approved OCR Architecture Design Proposal's explicit
+    non-goals).
+
+    raw_observation_id is taken explicitly from the caller (not derived
+    from ocr_result.raw_observation_id) and then validated to match —
+    see RawObservationOcrResultMismatchError — so a caller bug (e.g. an
+    OCRResult accidentally sourced from a different document than the
+    one being processed) is rejected loudly rather than silently
+    accepted or silently "corrected".
+
+    extraction_confidence is the deterministic-extraction tier (see
+    app.extraction.confidence) computed against the OCR text — this
+    function combines it with ocr_result.confidence via
+    app.extraction.ocr_confidence.apply_ocr_confidence_ceiling before
+    storing the result as ProductAttributeEvidence.confidence. Only the
+    ceiling'd value is ever stored; raw ocr_result.confidence stays on
+    OCRResult itself, reachable via evidence.ocr_result, never
+    duplicated onto this row.
+
+    Idempotent on (product_id, specification_id, raw_observation_id,
+    ocr_result_id) — matches uq_pae_source_ocr exactly, mirroring
+    create_attribute_evidence's own idempotent-create pattern one
+    dimension over (per OCRResult run instead of per RawObservation).
+    Runs the identical conflict detection as create_attribute_evidence.
+    """
+    if status == ProvenanceStatus.VERIFIED:
+        raise ValueError(
+            "status must not be 'verified' at creation — use verify_product_attribute_evidence"
+        )
+
+    await _validate_product_and_specification(
+        db, product_id=product_id, specification_id=specification_id
+    )
+
+    ocr_result = await ocr_result_service.get_ocr_result(db, ocr_result_id)
+    if ocr_result is None:
+        raise OCRResultNotFoundForEvidenceError(str(ocr_result_id))
+    if ocr_result.raw_observation_id != raw_observation_id:
+        raise RawObservationOcrResultMismatchError(
+            f"raw_observation_id {raw_observation_id} does not match "
+            f"ocr_result {ocr_result_id}'s own raw_observation_id "
+            f"{ocr_result.raw_observation_id}."
+        )
+
+    existing_result = await db.execute(
+        select(ProductAttributeEvidence).where(
+            ProductAttributeEvidence.product_id == product_id,
+            ProductAttributeEvidence.specification_id == specification_id,
+            ProductAttributeEvidence.raw_observation_id == raw_observation_id,
+            ProductAttributeEvidence.ocr_result_id == ocr_result_id,
+        )
+    )
+    existing = existing_result.scalar_one_or_none()
+    if existing is not None:
+        return existing, None
+
+    final_confidence = apply_ocr_confidence_ceiling(extraction_confidence, ocr_result.confidence)
+
+    now = datetime.now(UTC)
+    evidence = ProductAttributeEvidence(
+        product_id=product_id,
+        specification_id=specification_id,
+        raw_observation_id=raw_observation_id,
+        ocr_result_id=ocr_result_id,
+        value_observed=value_observed,
+        extraction_method=extraction_method,
+        confidence=final_confidence,
+        status=status,
+        last_observed_at=now,
+        extraction_context=extraction_context,
     )
     db.add(evidence)
     await db.flush()  # evidence.id needed before it can be referenced by a conflict

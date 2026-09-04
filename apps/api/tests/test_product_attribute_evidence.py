@@ -11,12 +11,16 @@ test_acquisition.py's established fixtures rather than duplicating
 them.
 """
 
+import uuid
+
 import pytest
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from app.db.session import AsyncSessionLocal
+from app.models.provenance_record import ExtractionMethod
 from app.models.raw_observation import RawObservation
+from app.services import ocr_result_service, product_attribute_evidence_service
 from tests.test_acquisition import _register_admin
 from tests.test_companies import _auth_headers, _register_verified
 from tests.test_product_graph import _create_category, _create_product, _create_specification
@@ -692,3 +696,170 @@ async def test_end_to_end_traceability_from_attribute_to_raw_observation(client)
     assert evidence_detail.status_code == 200
     resolved_observation_id = evidence_detail.json()["data"]["raw_observation_id"]
     assert resolved_observation_id == observation["id"]
+
+
+# --------------------------------------------------------------------------
+# OCR foundation (approved OCR Architecture Design Proposal)
+# --------------------------------------------------------------------------
+
+
+async def _create_ocr_result_row(
+    observation_id: str, page_number: int = 1, confidence: float = 0.9, **overrides
+):
+    async with AsyncSessionLocal() as db:
+        return await ocr_result_service.create_ocr_result(
+            db,
+            raw_observation_id=uuid.UUID(observation_id),
+            page_number=page_number,
+            text=overrides.pop("text", "fake ocr text"),
+            confidence=confidence,
+            engine_name=overrides.pop("engine_name", "fake-engine"),
+            engine_version=overrides.pop("engine_version", "1.0.0"),
+            render_dpi=overrides.pop("render_dpi", 300),
+            **overrides,
+        )
+
+
+@pytest.mark.asyncio
+async def test_multiple_evidence_rows_from_different_ocr_runs(client):
+    """(F) Two different OCR runs against the same RawObservation/page
+    each produce their own evidence row for the same attribute — the
+    widened uq_pae_source_ocr index must not collide them."""
+    user = await _register_verified(client, "pae-ocr-multi-evidence@example.com")
+    _category, spec, product = await _setup_product_with_spec(client, user)
+    observation = await _setup_observation(client, user, content_hash="ocr-multi-ev-hash")
+
+    run_a = await _create_ocr_result_row(observation["id"], page_number=4, confidence=0.9)
+    run_b = await _create_ocr_result_row(
+        observation["id"], page_number=4, confidence=0.95, engine_version="2.0.0"
+    )
+
+    async with AsyncSessionLocal() as db:
+        (
+            evidence_a,
+            _,
+        ) = await product_attribute_evidence_service.create_ocr_derived_attribute_evidence(
+            db,
+            product_id=uuid.UUID(product["id"]),
+            specification_id=uuid.UUID(spec["id"]),
+            raw_observation_id=uuid.UUID(observation["id"]),
+            ocr_result_id=run_a.id,
+            value_observed="500",
+            extraction_method=ExtractionMethod.RULE_BASED,
+            extraction_confidence=0.9,
+        )
+        (
+            evidence_b,
+            _,
+        ) = await product_attribute_evidence_service.create_ocr_derived_attribute_evidence(
+            db,
+            product_id=uuid.UUID(product["id"]),
+            specification_id=uuid.UUID(spec["id"]),
+            raw_observation_id=uuid.UUID(observation["id"]),
+            ocr_result_id=run_b.id,
+            value_observed="500",
+            extraction_method=ExtractionMethod.RULE_BASED,
+            extraction_confidence=0.9,
+        )
+
+    assert evidence_a.id != evidence_b.id
+    assert evidence_a.ocr_result_id == run_a.id
+    assert evidence_b.ocr_result_id == run_b.id
+
+
+@pytest.mark.asyncio
+async def test_duplicate_evidence_from_same_ocr_result_remains_blocked(client):
+    """(G) Re-running evidence creation against the SAME OCRResult is
+    idempotent — mirrors test_creating_duplicate_evidence_for_same_source_is_idempotent
+    (H) one dimension over (per-run instead of per-RawObservation)."""
+    user = await _register_verified(client, "pae-ocr-dup@example.com")
+    _category, spec, product = await _setup_product_with_spec(client, user)
+    observation = await _setup_observation(client, user, content_hash="ocr-dup-hash")
+    run = await _create_ocr_result_row(observation["id"])
+
+    async with AsyncSessionLocal() as db:
+        first, _ = await product_attribute_evidence_service.create_ocr_derived_attribute_evidence(
+            db,
+            product_id=uuid.UUID(product["id"]),
+            specification_id=uuid.UUID(spec["id"]),
+            raw_observation_id=uuid.UUID(observation["id"]),
+            ocr_result_id=run.id,
+            value_observed="500",
+            extraction_method=ExtractionMethod.RULE_BASED,
+            extraction_confidence=0.9,
+        )
+        second, _ = await product_attribute_evidence_service.create_ocr_derived_attribute_evidence(
+            db,
+            product_id=uuid.UUID(product["id"]),
+            specification_id=uuid.UUID(spec["id"]),
+            raw_observation_id=uuid.UUID(observation["id"]),
+            ocr_result_id=run.id,
+            value_observed="500",
+            extraction_method=ExtractionMethod.RULE_BASED,
+            extraction_confidence=0.9,
+        )
+
+    assert first.id == second.id
+
+
+@pytest.mark.asyncio
+async def test_mismatched_raw_observation_and_ocr_result_rejected(client):
+    """(I) An OCRResult sourced from one document can never be attached
+    to evidence claiming a DIFFERENT raw_observation_id — caller bugs
+    must fail loudly, never be silently accepted or silently
+    "corrected"."""
+    user = await _register_verified(client, "pae-ocr-mismatch@example.com")
+    _category, spec, product = await _setup_product_with_spec(client, user)
+    observation_a = await _setup_observation(client, user, content_hash="ocr-mismatch-a")
+    observation_b = await _setup_observation(client, user, content_hash="ocr-mismatch-b")
+    run_on_a = await _create_ocr_result_row(observation_a["id"])
+
+    async with AsyncSessionLocal() as db:
+        with pytest.raises(product_attribute_evidence_service.RawObservationOcrResultMismatchError):
+            await product_attribute_evidence_service.create_ocr_derived_attribute_evidence(
+                db,
+                product_id=uuid.UUID(product["id"]),
+                specification_id=uuid.UUID(spec["id"]),
+                raw_observation_id=uuid.UUID(observation_b["id"]),  # wrong document
+                ocr_result_id=run_on_a.id,
+                value_observed="500",
+                extraction_method=ExtractionMethod.RULE_BASED,
+                extraction_confidence=0.9,
+            )
+
+
+@pytest.mark.asyncio
+async def test_low_confidence_ocr_derived_evidence_cannot_be_verified(client):
+    """(J) The existing 0.45 verification guard protects OCR-derived
+    evidence with ZERO guard code changes — the ceiling is applied at
+    creation time, before confidence is ever stored."""
+    user = await _register_verified(client, "pae-ocr-lowconf-user@example.com")
+    admin = await _register_admin(client, "pae-ocr-lowconf-admin@example.com")
+    _category, spec, product = await _setup_product_with_spec(client, user)
+    observation = await _setup_observation(client, user, content_hash="ocr-lowconf-hash")
+    # High extraction confidence, but LOW ocr confidence — the ceiling
+    # must drag the final stored confidence below 0.45.
+    run = await _create_ocr_result_row(observation["id"], confidence=0.20)
+
+    async with AsyncSessionLocal() as db:
+        (
+            evidence,
+            _,
+        ) = await product_attribute_evidence_service.create_ocr_derived_attribute_evidence(
+            db,
+            product_id=uuid.UUID(product["id"]),
+            specification_id=uuid.UUID(spec["id"]),
+            raw_observation_id=uuid.UUID(observation["id"]),
+            ocr_result_id=run.id,
+            value_observed="500",
+            extraction_method=ExtractionMethod.RULE_BASED,
+            extraction_confidence=0.90,
+        )
+    assert evidence.confidence == 0.20  # min(0.90, 0.20)
+
+    res = await client.post(
+        f"/api/v1/products/attribute-evidence/{evidence.id}/verify",
+        headers=_auth_headers(admin),
+    )
+    assert res.status_code == 422, res.text
+    assert res.json()["error"]["code"] == "EVIDENCE_CONFIDENCE_TOO_LOW"

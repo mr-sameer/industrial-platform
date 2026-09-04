@@ -24,28 +24,76 @@ table is the evidence ledger behind it, linked only via
 ProductAttribute.latest_evidence_id — a cache pointer set exclusively
 by apply_reviewed_attribute_to_product, never the source of truth for
 what evidence exists.
+
+OCR foundation (approved OCR Architecture Design Proposal, refinement
+B): `ocr_result_id` is nullable and NULL for every evidence row created
+before this milestone and every non-OCR row created after it —
+`raw_observation_id` alone continues to mean exactly what it always
+has for those rows. When set, it links this row to the specific
+app.models.ocr_result.OCRResult *run* it was extracted from; the
+service layer (see
+app.services.product_attribute_evidence_service.create_ocr_derived_attribute_evidence)
+guarantees `raw_observation_id == ocr_result.raw_observation_id` by
+construction — an OCRResult is always a transformation of the same
+original document this row's raw_observation_id already points at,
+never a different one.
+
+The original 3-column uniqueness (product_id, specification_id,
+raw_observation_id) is preserved EXACTLY for non-OCR rows via a partial
+index scoped to ocr_result_id IS NULL — the existing idempotent-create
+guarantee for manual/rule_based/ai_assisted evidence is unchanged bit
+for bit. A second, separate partial index (scoped to ocr_result_id IS
+NOT NULL) additionally keys on ocr_result_id, because a second OCR run
+against the very same raw_observation_id (same original PDF, better
+engine or higher DPI) must be able to produce its OWN evidence row
+without colliding with the first run's — while a repeated extraction
+pass against the SAME OCRResult remains idempotent, exactly mirroring
+the non-OCR guarantee one dimension over.
 """
 
 import uuid
 from datetime import datetime
+from typing import TYPE_CHECKING
 
-from sqlalchemy import DateTime, Enum, Float, ForeignKey, Text, UniqueConstraint, func
+from sqlalchemy import DateTime, Enum, Float, ForeignKey, Index, Text, func, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.enum_utils import str_enum_values
 from app.db.session import Base
 from app.models.provenance_record import ExtractionMethod, ProvenanceStatus
 
+if TYPE_CHECKING:
+    from app.models.ocr_result import OCRResult
+
 
 class ProductAttributeEvidence(Base):
     __tablename__ = "product_attribute_evidence"
     __table_args__ = (
-        UniqueConstraint(
+        # Replaces the original single UniqueConstraint(product_id,
+        # specification_id, raw_observation_id) — see this class's own
+        # docstring ("OCR foundation") for why a plain 3-column
+        # constraint can no longer serve both non-OCR and OCR evidence.
+        # ocr_result_id IS NULL / IS NOT NULL are plain-NULL predicates,
+        # not enum literals, so these are safe to declare here directly
+        # (unlike company_members' partial index — see that model's own
+        # comment for the asyncpg/enum-literal quirk this avoids).
+        Index(
+            "uq_pae_source_manual",
             "product_id",
             "specification_id",
             "raw_observation_id",
-            name="uq_product_attribute_evidence_source",
+            unique=True,
+            postgresql_where=text("ocr_result_id IS NULL"),
+        ),
+        Index(
+            "uq_pae_source_ocr",
+            "product_id",
+            "specification_id",
+            "raw_observation_id",
+            "ocr_result_id",
+            unique=True,
+            postgresql_where=text("ocr_result_id IS NOT NULL"),
         ),
     )
 
@@ -69,6 +117,21 @@ class ProductAttributeEvidence(Base):
         nullable=False,
         index=True,
     )
+    # NULL for every non-OCR row (manual/rule_based/ai_assisted against
+    # a native text layer) — set only when this row's value_observed
+    # was extracted from an app.models.ocr_result.OCRResult run. See
+    # this class's own "OCR foundation" docstring for the uniqueness
+    # implications and the raw_observation_id-consistency invariant.
+    ocr_result_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("ocr_results.id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+    )
+    # One-directional (no back_populates): OCRResult has no reciprocal
+    # collection attribute — nothing in this milestone needs to walk
+    # "all evidence derived from this OCR run" via the ORM.
+    ocr_result: Mapped["OCRResult | None"] = relationship()
     # What the source actually said for this attribute — never mutated
     # after creation, exactly like ProvenanceRecord.value_observed.
     value_observed: Mapped[str] = mapped_column(Text, nullable=False)

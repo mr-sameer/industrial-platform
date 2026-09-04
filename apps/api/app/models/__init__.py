@@ -21,6 +21,7 @@ from app.models.entity_resolution_candidate import (
 )
 from app.models.factory import Factory
 from app.models.graph_relationship import GraphEntityType, GraphRelationship, RelationshipType
+from app.models.ocr_result import OCRResult
 from app.models.offering import Offering, OfferingRole, OfferingStatus, OfferingVerificationStatus
 from app.models.password_history import PasswordHistory
 from app.models.password_reset_token import PasswordResetToken
@@ -90,6 +91,7 @@ __all__ = [
     "EntityType",
     "ExtractionMethod",
     "LegalEntityType",
+    "OCRResult",
     "Offering",
     "OfferingRole",
     "OfferingStatus",
