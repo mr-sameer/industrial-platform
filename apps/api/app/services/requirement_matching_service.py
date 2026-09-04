@@ -296,6 +296,30 @@ def _evaluate_criterion(
 # Soft signals (Section 6/8)
 # --------------------------------------------------------------------------
 
+# Country-identity normalization for the location signal's country
+# comparison ONLY — state/city stay exact-match (case-insensitive),
+# unchanged, per the architecture doc's hierarchy. A deterministic,
+# closed alias table, not fuzzy/substring matching and not a geocoding
+# call: each key is a lowercased alternate representation, each value
+# is the canonical token every equivalent representation maps to.
+# Anything absent from this table falls back to its own lowercased,
+# stripped form — identical to this function's behavior before the
+# table existed, so every pre-existing exact/case-insensitive match
+# (e.g. "Germany" == "germany") is unaffected. Deliberately small today
+# (ForgeX's only real pilot data needs India<->IN) — extend it with
+# more real ISO-3166 alpha-2/name pairs as real buyer/supplier country
+# values require them; the shape already supports an arbitrarily large
+# table without any other code changing.
+_COUNTRY_ALIASES: dict[str, str] = {
+    "india": "in",
+    "in": "in",
+}
+
+
+def _normalize_country(value: str) -> str:
+    key = value.strip().lower()
+    return _COUNTRY_ALIASES.get(key, key)
+
 
 def _location_fact(offering: Offering, company: Company) -> dict[str, str | None]:
     """Offering.country is primary; Company.country/state/city is the
@@ -327,7 +351,7 @@ def _score_location(
     country_matched = (
         requirement.country is not None
         and candidate["country"] is not None
-        and requirement.country.strip().lower() == candidate["country"].strip().lower()
+        and _normalize_country(requirement.country) == _normalize_country(candidate["country"])
     )
     if country_matched:
         points += _LOCATION_COUNTRY_POINTS

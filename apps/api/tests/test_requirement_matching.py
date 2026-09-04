@@ -394,6 +394,148 @@ async def test_location_omitted_state_blocks_city_credit_even_if_city_matches(cl
 
 
 # --------------------------------------------------------------------------
+# Country-identity normalization (_normalize_country) — unit-level, no DB.
+# Covers the CRI pilot's real gap: Company.country="IN" vs a buyer
+# Requirement.country="India" scored 0 location points before this table
+# existed, despite denoting the same real country.
+# --------------------------------------------------------------------------
+
+
+def test_normalize_country_matches_india_and_iso_code_both_directions():
+    assert requirement_matching_service._normalize_country(
+        "India"
+    ) == requirement_matching_service._normalize_country("IN")
+    assert requirement_matching_service._normalize_country(
+        "IN"
+    ) == requirement_matching_service._normalize_country("India")
+
+
+def test_normalize_country_is_case_insensitive():
+    assert requirement_matching_service._normalize_country(
+        "india"
+    ) == requirement_matching_service._normalize_country("in")
+
+
+def test_normalize_country_preserves_exact_match_for_unlisted_countries():
+    # Not in _COUNTRY_ALIASES at all — must fall back to the same
+    # lowercased/stripped behavior _score_location always had.
+    assert requirement_matching_service._normalize_country(
+        "Germany"
+    ) == requirement_matching_service._normalize_country("germany")
+
+
+def test_normalize_country_does_not_conflate_india_and_indonesia():
+    assert requirement_matching_service._normalize_country(
+        "India"
+    ) != requirement_matching_service._normalize_country("Indonesia")
+
+
+def test_normalize_country_does_not_conflate_in_and_id():
+    assert requirement_matching_service._normalize_country(
+        "IN"
+    ) != requirement_matching_service._normalize_country("ID")
+
+
+@pytest.mark.asyncio
+async def test_location_india_requirement_matches_iso_in_candidate(client):
+    """The real CRI-pilot shape: Company.country stores the ISO code
+    'IN'; the buyer's Requirement.country is the free-text 'India'. Must
+    earn country-level location points via normalization, not a raw
+    string comparison."""
+    user = await _register_verified(client, "match-loc-india-in@example.com")
+    category = await _create_category(client, user, "India ISO Alias Category")
+    product = await _create_product(client, user, category["id"], name="India ISO Alias Product")
+    await _publish(client, user, product["id"])
+    owner, company = await _create_company_at(
+        client,
+        "match-loc-india-in-co@example.com",
+        "India ISO Alias Co",
+        country="IN",  # exactly how the real CRI pilot company stores it
+        state="Tamil Nadu",
+        city="Coimbatore",
+    )
+    await _offer(client, owner, company, product)
+
+    requirement = await _create_requirement(
+        client,
+        user,
+        product_category_id=category["id"],
+        country="India",  # exactly how the real buyer query phrases it
+    )
+    data = await _get_matches(client, user, requirement["id"])
+    location = data["matches"][0]["signals"]["location"]
+    assert location["points_earned"] == 15.0  # country only — state/city not requested
+
+
+@pytest.mark.asyncio
+async def test_location_alias_matched_country_still_unlocks_state_and_city_hierarchy(client):
+    """Proves the hierarchy composition (Section 6/8) is unaffected by
+    normalization: an alias-matched country ('India' vs 'IN') must
+    unlock state/city credit exactly as an exact-string country match
+    already did — full 30/30 when the requirement also specifies a
+    genuinely matching state and city."""
+    user = await _register_verified(client, "match-loc-india-full@example.com")
+    category = await _create_category(client, user, "India ISO Alias Full Category")
+    product = await _create_product(
+        client, user, category["id"], name="India ISO Alias Full Product"
+    )
+    await _publish(client, user, product["id"])
+    owner, company = await _create_company_at(
+        client,
+        "match-loc-india-full-co@example.com",
+        "India ISO Alias Full Co",
+        country="IN",
+        state="Tamil Nadu",
+        city="Coimbatore",
+    )
+    await _offer(client, owner, company, product)
+
+    requirement = await _create_requirement(
+        client,
+        user,
+        product_category_id=category["id"],
+        country="India",
+        state="Tamil Nadu",
+        city="Coimbatore",
+    )
+    data = await _get_matches(client, user, requirement["id"])
+    location = data["matches"][0]["signals"]["location"]
+    assert location["points_earned"] == 30.0
+    assert location["points_possible"] == 30.0
+
+
+@pytest.mark.asyncio
+async def test_location_country_mismatch_still_blocks_all_credit(client):
+    """India vs Indonesia must remain a genuine non-match — the alias
+    table must never cause two different real countries to score."""
+    user = await _register_verified(client, "match-loc-india-indonesia@example.com")
+    category = await _create_category(client, user, "India Indonesia Category")
+    product = await _create_product(
+        client, user, category["id"], name="India Indonesia Product"
+    )
+    await _publish(client, user, product["id"])
+    owner, company = await _create_company_at(
+        client,
+        "match-loc-india-indonesia-co@example.com",
+        "India Indonesia Co",
+        country="Indonesia",
+        state="Java",
+        city="Jakarta",
+    )
+    await _offer(client, owner, company, product)
+
+    requirement = await _create_requirement(
+        client,
+        user,
+        product_category_id=category["id"],
+        country="India",
+    )
+    data = await _get_matches(client, user, requirement["id"])
+    location = data["matches"][0]["signals"]["location"]
+    assert location["points_earned"] == 0.0
+
+
+# --------------------------------------------------------------------------
 # Certification signal — VERIFIED-only, conservative word-boundary match
 # --------------------------------------------------------------------------
 
