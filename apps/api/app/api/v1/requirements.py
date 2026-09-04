@@ -36,7 +36,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.dependencies import CurrentUser
 from app.core.responses import ApiSuccess, success_response
 from app.db.session import DbSession
-from app.models.provenance_record import ProvenanceRecord
+from app.models.product_attribute import ProductAttribute
+from app.models.product_attribute_evidence import ProductAttributeEvidence
+from app.models.product_specification import ProductSpecification
+from app.models.provenance_record import ProvenanceStatus
 from app.models.raw_observation import RawObservation
 from app.models.requirement import Requirement
 from app.schemas.requirement import (
@@ -182,32 +185,49 @@ async def _fetch_product_evidence(
     db: AsyncSession, product_ids: set[uuid.UUID]
 ) -> dict[uuid.UUID, list[RequirementMatchEvidenceItem]]:
     """
-    One batched, read-only query for the real provenance trail behind
-    each candidate's Product — never per-candidate (avoids N+1 the same
-    way every other batched fetch in this file's sibling services
-    does). Company-level provenance is deliberately out of scope here
-    (see RequirementMatchEvidenceItem's own docstring) — this only
+    One batched, read-only query for the real evidence trail behind
+    each candidate's Product's canonical attribute values — never
+    per-candidate (avoids N+1 the same way every other batched fetch in
+    this file's sibling services does).
+
+    Source of truth: ProductAttribute.latest_evidence_id -> the exact
+    ProductAttributeEvidence row product_attribute_evidence_service
+    .apply_reviewed_attribute_to_product actually applied to produce
+    that attribute's current value -> its RawObservation's
+    external_reference. That function only ever runs on evidence that
+    is ALREADY status=VERIFIED (EvidenceNotVerifiedError otherwise), so
+    every row this join can reach is inherently the one, canonical,
+    applied claim for that (product, specification) pair — never a
+    REJECTED/UNDER_REVIEW/superseded row still sitting in the same
+    ledger. The explicit VERIFIED filter below is defense-in-depth,
+    not the only guard: it makes that guarantee visible in this query
+    itself rather than relying solely on apply's own enforcement
+    elsewhere. Company-level provenance is deliberately out of scope
+    here (see RequirementMatchEvidenceItem's own docstring) — this only
     answers "what evidence backs this specific product," which is what
     a buyer deciding whether to trust *this offering* actually needs.
-    Status is reported exactly as stored — never upgraded, never
-    inferred as VERIFIED.
     """
     if not product_ids:
         return {}
     result = await db.execute(
-        select(ProvenanceRecord, RawObservation.external_reference)
-        .join(RawObservation, RawObservation.id == ProvenanceRecord.raw_observation_id)
-        .where(ProvenanceRecord.product_id.in_(product_ids))
-        .order_by(ProvenanceRecord.field_name)
+        select(ProductSpecification.name, ProductAttributeEvidence, RawObservation.external_reference)
+        .select_from(ProductAttribute)
+        .join(ProductAttributeEvidence, ProductAttributeEvidence.id == ProductAttribute.latest_evidence_id)
+        .join(ProductSpecification, ProductSpecification.id == ProductAttribute.specification_id)
+        .join(RawObservation, RawObservation.id == ProductAttributeEvidence.raw_observation_id)
+        .where(
+            ProductAttribute.product_id.in_(product_ids),
+            ProductAttributeEvidence.status == ProvenanceStatus.VERIFIED,
+        )
+        .order_by(ProductSpecification.name)
     )
     by_product: dict[uuid.UUID, list[RequirementMatchEvidenceItem]] = {}
-    for record, external_reference in result.all():
-        assert record.product_id is not None  # this query only ever selects product-entity rows
-        by_product.setdefault(record.product_id, []).append(
+    for specification_name, evidence, external_reference in result.all():
+        by_product.setdefault(evidence.product_id, []).append(
             RequirementMatchEvidenceItem(
-                field_name=record.field_name,
-                value_observed=record.value_observed,
-                status=record.status.value,
+                field_name=specification_name,
+                value_observed=evidence.value_observed,
+                status=evidence.status.value,
                 source_url=external_reference,
             )
         )

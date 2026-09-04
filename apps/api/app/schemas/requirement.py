@@ -200,15 +200,15 @@ class RequirementMatchOfferingDetails(BaseModel):
 
 class RequirementMatchEvidenceItem(BaseModel):
     """
-    One real ProvenanceRecord for the candidate's Product, with its
-    backing RawObservation's external_reference — never anything about
-    the Company (Module 8C's provenance-application UI already covers
-    that separately; adding it here would duplicate, not extend, an
-    existing surface). `status` is always `observed`/`extracted` here,
-    never `verified` unless a real, unmodified
-    provenance_service.verify_provenance_record call actually happened
-    for that row — this schema does not decide that, it only reports
-    the real column value.
+    One real, VERIFIED-and-applied ProductAttributeEvidence row for the
+    candidate's Product (via ProductAttribute.latest_evidence_id), with
+    its backing RawObservation's external_reference — never anything
+    about the Company (Module 8C's provenance-application UI already
+    covers that separately; adding it here would duplicate, not
+    extend, an existing surface). `status` reports the real stored
+    column value (see app.api.v1.requirements._fetch_product_evidence)
+    — always `verified` today, since that is the only status this
+    query's join can ever reach, never upgraded/inferred here.
     """
 
     field_name: str
