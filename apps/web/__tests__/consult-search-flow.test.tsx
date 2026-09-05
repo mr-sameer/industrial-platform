@@ -382,4 +382,110 @@ describe("Consult search flow (Module 7A-1/7A-2 integration)", () => {
     expect(payload.product_category_id).toBe("cat-pumps");
     expect(payload.criteria).toEqual([{ specification_id: MOTOR_POWER_ID, operator: "gte", value: 3 }]);
   });
+
+  /**
+   * Regression acceptance test for the real buyer pilot fix: the exact
+   * production-like buyer message that previously reached the backend
+   * with only a Pump Type criterion (Flow Rate/Head/Motor Power all
+   * silently dropped). Drives the real ConsultForm component — not
+   * just extractTechnicalCriteria in isolation — end to end through
+   * the same createRequirement payload the live app sends, and asserts
+   * the "ForgeX understood" panel surfaces both what resolved and the
+   * material/regional-preference gaps that don't.
+   */
+  it("extracts all four technical criteria from the real buyer pilot requirement and shows what ForgeX understood", async () => {
+    const FLOW_RATE_ID = "spec-flow-rate-real";
+    const HEAD_ID = "spec-head-real";
+    const MOTOR_POWER_ID = "spec-motor-power-real";
+    const PUMP_TYPE_ID = "spec-pump-type-real";
+    const CATEGORY_ID = "cat-centrifugal-pumps";
+
+    vi.mocked(listCategories).mockResolvedValue({
+      success: true,
+      data: [{ id: CATEGORY_ID, name: "Centrifugal Pumps", slug: "centrifugal-pumps", parent_id: null }],
+      meta: okMeta,
+    });
+    vi.mocked(listCategorySpecifications).mockResolvedValue({
+      success: true,
+      data: [
+        { id: MOTOR_POWER_ID, category_id: CATEGORY_ID, name: "Motor Power", unit: "kW", datatype: "number", enum_options: null, required: false },
+        { id: FLOW_RATE_ID, category_id: CATEGORY_ID, name: "Flow Rate", unit: "m3/hr", datatype: "number", enum_options: null, required: false },
+        { id: HEAD_ID, category_id: CATEGORY_ID, name: "Head", unit: "m", datatype: "number", enum_options: null, required: false },
+        { id: PUMP_TYPE_ID, category_id: CATEGORY_ID, name: "Pump Type", unit: null, datatype: "text", enum_options: null, required: false },
+      ],
+      meta: okMeta,
+    });
+    vi.mocked(createRequirement).mockResolvedValue({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      success: true, data: { id: "req-pilot" } as any, meta: okMeta,
+    });
+    // Mirrors the real matcher's real behavior confirmed against the
+    // live dev database: the sole seeded product has no verified Flow
+    // Rate/Head evidence, so it is correctly excluded once these four
+    // criteria actually reach the backend — zero matches, not a
+    // fabricated one.
+    vi.mocked(getRequirementMatches).mockResolvedValue({
+      success: true,
+      data: {
+        requirement_id: "req-pilot",
+        status: "computed",
+        total_candidates_considered: 1,
+        more_candidates_may_exist: false,
+        excluded_for_hard_criteria: 1,
+        returned_count: 0,
+        matches: [],
+      },
+      meta: okMeta,
+    });
+
+    const buyerMessage = `We're sourcing a high-pressure vertical multistage centrifugal pump for a boiler feedwater application at a textile processing unit in Gujarat, India.
+
+Technical requirements:
+- Pump type: vertical multistage centrifugal (not submersible, not end-suction)
+- Flow rate: minimum 15 m3/hr at duty point
+- Total head: at least 150 m
+- Motor power: should not exceed 15 kW (site has a limited electrical sanction load)
+- Wetted parts in stainless steel (SS316 preferred, SS304 acceptable) — handles slightly acidic condensate return
+- Must be rated for continuous duty, 24x7 operation across a 3-shift plant
+
+Commercial requirements:
+- Manufacturer or authorized distributor based in India, preferably Gujarat, Maharashtra or Tamil Nadu — freight and after-sales response time matter more to us than shaving the last bit off unit price
+- Should be able to demonstrate ISO 9001 certification; CE marking is a plus if the same model is also exported
+- Initial order is 4 units, with a realistic follow-on of 20+ units/year if this vendor gets qualified for repeat business
+- Need the first units within 6-8 weeks of PO — this is tied to a planned shutdown window
+- We'd prefer a company with an actual, verifiable track record supplying this pump type into process industries (textile, chemical, or similar), not just a catalog listing
+
+Please shortlist companies/products that can genuinely meet this, and be clear about what's confirmed with evidence versus what's just claimed.`;
+
+    render(<ConsultPage />);
+    const input = screen.getByLabelText("Your message");
+    fireEvent.change(input, { target: { value: buyerMessage } });
+    fireEvent.submit(input.closest("form")!);
+    fireEvent.click(screen.getByText("Search now"));
+
+    await waitFor(() => expect(createRequirement).toHaveBeenCalled());
+    const [payload] = vi.mocked(createRequirement).mock.calls[0]!;
+    expect(payload.product_category_id).toBe(CATEGORY_ID);
+    expect(payload.criteria).toHaveLength(4);
+    expect(payload.criteria).toContainEqual({ specification_id: FLOW_RATE_ID, operator: "gte", value: 15 });
+    expect(payload.criteria).toContainEqual({ specification_id: HEAD_ID, operator: "gte", value: 150 });
+    expect(payload.criteria).toContainEqual({ specification_id: MOTOR_POWER_ID, operator: "lte", value: 15 });
+    expect(payload.criteria).toContainEqual({
+      specification_id: PUMP_TYPE_ID,
+      operator: "eq",
+      value: "Vertical Multistage Centrifugal Pump",
+    });
+
+    // The honest no-match state renders (the backend correctly excluded
+    // the only candidate) — and the "ForgeX understood" panel shows all
+    // four resolved criteria plus the material and regional-preference
+    // gaps, rather than the requirement silently vanishing.
+    await waitFor(() => expect(screen.getByText(/growing daily/)).toBeTruthy());
+    expect(screen.getByText("Flow Rate: >= 15 m3/hr")).toBeTruthy();
+    expect(screen.getByText("Head: >= 150 m")).toBeTruthy();
+    expect(screen.getByText("Motor Power: <= 15 kW")).toBeTruthy();
+    expect(screen.getByText("Pump Type: = Vertical Multistage Centrifugal Pump")).toBeTruthy();
+    expect(screen.getByText(/Regional preference noted: Gujarat, Maharashtra, Tamil Nadu/)).toBeTruthy();
+    expect(screen.getByText(/Material \/ wetted-parts construction requirement is not currently matchable/)).toBeTruthy();
+  });
 });

@@ -714,8 +714,38 @@ export function resolveCategoryId(categories: ProductCategory[], text: string): 
 // specification_id.
 // --------------------------------------------------------------------
 
-const GTE_OPERATOR_PHRASES = ["at least", "minimum", "greater than", "more than", "above"];
-const LTE_OPERATOR_PHRASES = ["at most", "maximum", "less than", "fewer than", "below"];
+// Expanded from the pilot's original 5-phrase-each vocabulary after a
+// real buyer test found ordinary RFQ phrasing — "should not exceed",
+// "minimum of", "not less than", the >=/<= shorthand a spec sheet
+// might use — produced NO criterion at all: the buyer's explicit hard
+// constraint was silently dropped with no warning anywhere. Same
+// finite/explicit-list discipline as before, just wider coverage of
+// how a real buyer actually phrases a bound; still never a default or
+// inferred operator (see the bare-number tests in
+// requirement-technical-criteria.test.ts).
+const GTE_OPERATOR_PHRASES = [
+  "at least",
+  "minimum of",
+  "minimum",
+  "greater than",
+  "more than",
+  "above",
+  "not less than",
+  ">=",
+];
+const LTE_OPERATOR_PHRASES = [
+  "at most",
+  "maximum",
+  "max",
+  "less than",
+  "fewer than",
+  "below",
+  "should not exceed",
+  "no more than",
+  "not more than",
+  "up to",
+  "<=",
+];
 
 // Explicit, finite alias table — deliberately small, same philosophy
 // as KNOWN_COUNTRIES/KNOWN_CITIES/KNOWN_CERTIFICATIONS above. Keyed by
@@ -748,6 +778,30 @@ function escapeRegExp(s: string): string {
 }
 
 const TECHNICAL_NUMBER_PATTERN = "\\d+(?:\\.\\d+)?";
+
+// Tolerates the punctuation a real buyer's bullet-style spec line
+// actually uses between the specification name and its bound
+// ("Flow rate: minimum 15 m3/hr", "Total head — at least 150 m") — the
+// original bare `\s*` only tolerated extra whitespace, not a
+// colon/dash/em-dash/comma separator, which is exactly why a real
+// buyer's technical criteria were silently dropped. Still only ever
+// whitespace plus at most one punctuation character — never a
+// sentence-parsing rule.
+const ALIAS_OPERATOR_SEPARATOR = "\\s*(?:[:\\-—,]\\s*)?";
+
+// Builds the regex fragment for one operator phrase/symbol. A plain
+// phrase ("minimum", "should not exceed") is wrapped in \b...\b with
+// internal spaces widened to \s+ so a multi-word phrase still matches
+// across extra whitespace or a line wrap. A symbolic operator (">=",
+// "<=") is deliberately NOT \b-wrapped: neither character is a word
+// character, so \b would require a word/non-word transition
+// immediately at the symbol itself — which fails to match the
+// overwhelmingly common "power >= 15" case (space then symbol, both
+// non-word, no boundary exists between them).
+function operatorFragment(phrase: string): string {
+  if (/^[<>]=$/.test(phrase)) return escapeRegExp(phrase);
+  return `\\b${escapeRegExp(phrase).replace(/ /g, "\\s+")}\\b`;
+}
 
 // Pump Type (text, eq) — deliberately small alias table, justified
 // only by the two real pilot products' own real, VERIFIED Pump Type
@@ -862,21 +916,38 @@ export function extractTechnicalCriteria(
         if (foundForThisSpec) break;
 
         for (const phrase of phrases) {
-          const opPattern = escapeRegExp(phrase);
-          // Order A: "<spec> [of] <operator> <number> <unit>"
-          //   e.g. "motor power above 5 kW", "head of at least 50 m"
-          // Order B: "<operator> <number> <unit> <spec>"
-          //   e.g. "at least 3 kW motor power"
+          const opFragment = operatorFragment(phrase);
+          // Four independent orders a real buyer's sentence or RFQ
+          // bullet line actually uses — each still requires the spec
+          // alias, the operator, the number, AND the number's own
+          // configured unit all explicitly present; never a default
+          // operator (see the bare-number tests below).
+          //   A: "<spec>[: /—/,] [of] <operator> <number> <unit>"
+          //      e.g. "motor power above 5 kW", "flow rate: minimum 15 m3/hr"
+          //   B: "<operator> <number> <unit> <spec>"
+          //      e.g. "at least 3 kW motor power"
+          //   C: "<operator> <spec> [of] <number> <unit>"
+          //      e.g. "minimum head of 150 m"
+          //   D: "<spec>[: /—/,] <number> <unit> <operator>"
+          //      e.g. "flow rate: 15 m3/hr minimum"
           const patternA = new RegExp(
-            `\\b${aliasPattern}\\b\\s*(?:of\\s+)?${opPattern}\\s+(${TECHNICAL_NUMBER_PATTERN})\\s*(?:${unitAlternation})\\b`,
+            `\\b${aliasPattern}\\b${ALIAS_OPERATOR_SEPARATOR}(?:of\\s+)?${opFragment}\\s+(${TECHNICAL_NUMBER_PATTERN})\\s*(?:${unitAlternation})\\b`,
             "i"
           );
           const patternB = new RegExp(
-            `\\b${opPattern}\\s+(${TECHNICAL_NUMBER_PATTERN})\\s*(?:${unitAlternation})\\s+${aliasPattern}\\b`,
+            `${opFragment}\\s+(${TECHNICAL_NUMBER_PATTERN})\\s*(?:${unitAlternation})\\s+${aliasPattern}\\b`,
+            "i"
+          );
+          const patternC = new RegExp(
+            `${opFragment}\\s+${aliasPattern}\\b${ALIAS_OPERATOR_SEPARATOR}(?:of\\s+)?(${TECHNICAL_NUMBER_PATTERN})\\s*(?:${unitAlternation})\\b`,
+            "i"
+          );
+          const patternD = new RegExp(
+            `\\b${aliasPattern}\\b${ALIAS_OPERATOR_SEPARATOR}(${TECHNICAL_NUMBER_PATTERN})\\s*(?:${unitAlternation})\\s*${opFragment}`,
             "i"
           );
 
-          for (const pattern of [patternA, patternB]) {
+          for (const pattern of [patternA, patternB, patternC, patternD]) {
             const match = pattern.exec(text);
             if (!match) continue;
             const start = match.index;
@@ -901,4 +972,150 @@ export function extractTechnicalCriteria(
   }
 
   return criteria;
+}
+
+// --------------------------------------------------------------------
+// Ambiguous / unsupported technical mentions — Requirement Intelligence
+// correctness fix (real buyer pilot audit). extractTechnicalCriteria's
+// vocabulary was widened above, but no finite phrase list will ever
+// cover every real buyer's wording. The correctness bar isn't "parse
+// everything" — it's "never silently discard a requirement that was
+// actually stated." These two functions never produce a criterion and
+// never touch the matcher; they only tell the UI "the buyer probably
+// meant to constrain X here, but this couldn't be parsed with
+// confidence" or "the buyer asked about X, and ForgeX doesn't track
+// that at all today" — so the gap is always visible, never silent.
+// --------------------------------------------------------------------
+
+export interface AmbiguousTechnicalMention {
+  specificationName: string;
+}
+
+/**
+ * A supported specification (Motor Power/Flow Rate/Head/Pump Type) is
+ * flagged here when the buyer's text mentions both the spec's own name
+ * and — for a numeric spec — a value in its real configured unit, but
+ * no criterion was actually extracted for it: e.g. "Motor power: 15
+ * kW" with no operator at all (never inferred as "=" or any default —
+ * see this file's own "ask, don't guess" rule), or a genuine bound
+ * stated in a construction outside extractTechnicalCriteria's finite
+ * pattern set. Deliberately reuses extractTechnicalCriteria itself
+ * (rather than re-deriving which specs resolved) so the two functions
+ * can never silently disagree about what counted as "resolved."
+ */
+export function detectAmbiguousTechnicalMentions(
+  text: string,
+  specifications: ProductSpecification[]
+): AmbiguousTechnicalMention[] {
+  const resolvedIds = new Set(extractTechnicalCriteria(text, specifications).map((c) => c.specification_id));
+  const mentions: AmbiguousTechnicalMention[] = [];
+
+  for (const spec of specifications) {
+    if (resolvedIds.has(spec.id)) continue;
+
+    if (spec.name === "Pump Type" && spec.datatype === "text") {
+      if (/\bpump type\b/i.test(text)) mentions.push({ specificationName: spec.name });
+      continue;
+    }
+
+    if (spec.datatype !== "number") continue;
+    const aliases = TECHNICAL_SPEC_ALIASES[spec.name];
+    const unitVariants = TECHNICAL_SPEC_UNIT_VARIANTS[spec.name];
+    if (!aliases || !unitVariants) continue;
+    if (!spec.unit || !unitVariants.some((u) => u.toLowerCase() === spec.unit!.toLowerCase())) continue;
+
+    const aliasPresent = aliases.some((alias) => new RegExp(`\\b${escapeRegExp(alias)}\\b`, "i").test(text));
+    // A number immediately followed by the spec's own unit — not a
+    // bare unit-letter search, which would false-positive on "m"
+    // (Head) matching almost any word that happens to contain an m.
+    const valuePresent = unitVariants.some((unit) =>
+      new RegExp(`${TECHNICAL_NUMBER_PATTERN}\\s*${escapeRegExp(unit)}\\b`, "i").test(text)
+    );
+    if (aliasPresent && valuePresent) mentions.push({ specificationName: spec.name });
+  }
+
+  return mentions;
+}
+
+// A short, explicit, finite list of real procurement concepts ForgeX
+// has no ProductSpecification for at all today — not "hard to parse,"
+// genuinely not modeled anywhere in the schema for Industrial Pumps —
+// so no amount of better parsing could ever turn these into a
+// criterion. Same "small, honest, fixed lookup" philosophy as
+// KNOWN_COUNTRIES/KNOWN_CITIES/KNOWN_CERTIFICATIONS above. Flagged
+// separately from AmbiguousTechnicalMention so the UI can be honest
+// about the difference between "I heard you but couldn't parse it"
+// and "ForgeX doesn't track this at all yet."
+const UNSUPPORTED_TECHNICAL_CONCEPTS: Record<string, string[]> = {
+  "Material / wetted-parts construction": [
+    "stainless steel",
+    "ss316",
+    "ss 316",
+    "ss304",
+    "ss 304",
+    "wetted parts",
+    "wetted-parts",
+  ],
+  "Supplier lead time": ["lead time", "lead-time", "delivery time", "turnaround time"],
+};
+
+export function detectUnsupportedTechnicalMentions(text: string): string[] {
+  return Object.entries(UNSUPPORTED_TECHNICAL_CONCEPTS)
+    .filter(([, phrases]) => phrases.some((phrase) => new RegExp(`\\b${escapeRegExp(phrase)}\\b`, "i").test(text)))
+    .map(([label]) => label);
+}
+
+// Indian states only — mirrors KNOWN_CITIES' own "not a geo database"
+// scope, one administrative level up. Purely informational: the real
+// backend Requirement.state field (app/schemas/requirement.py's
+// RequirementCreate) is a single string, so a buyer's OR-of-several-
+// states preference ("Gujarat, Maharashtra or Tamil Nadu") can never
+// be turned into one hard filter value without arbitrarily picking one
+// and silently discarding the rest — which would be worse than not
+// filtering at all. Surfaced to the buyer as a noted preference
+// instead (see TechnicalUnderstandingCard); never sent to
+// POST /requirements.
+const KNOWN_STATES = [
+  "gujarat",
+  "maharashtra",
+  "tamil nadu",
+  "karnataka",
+  "telangana",
+  "andhra pradesh",
+  "uttar pradesh",
+  "rajasthan",
+  "punjab",
+  "haryana",
+  "west bengal",
+  "madhya pradesh",
+  "kerala",
+  "bihar",
+  "odisha",
+];
+
+export function extractRegionalPreference(text: string): string[] {
+  return KNOWN_STATES.filter((state) => new RegExp(`\\b${escapeRegExp(state)}\\b`, "i").test(text)).map(titleCase);
+}
+
+const OPERATOR_DISPLAY: Record<string, string> = { gte: ">=", lte: "<=", eq: "=" };
+
+/**
+ * Human-readable "ForgeX understood" lines for the resolved technical
+ * criteria — e.g. "Flow Rate: >= 15 m3/hr". Purely presentational (no
+ * extraction logic of its own); kept here rather than inline in the
+ * Consult page so it's covered by the same test file as the extraction
+ * it renders.
+ */
+export function formatTechnicalCriteria(
+  criteria: RequirementSpecificationCriterionInput[],
+  specifications: ProductSpecification[]
+): string[] {
+  const byId = new Map(specifications.map((s) => [s.id, s]));
+  return criteria.map((c) => {
+    const spec = byId.get(c.specification_id);
+    const name = spec?.name ?? "Specification";
+    const unit = spec?.unit ? ` ${spec.unit}` : "";
+    const symbol = OPERATOR_DISPLAY[c.operator] ?? c.operator;
+    return `${name}: ${symbol} ${c.value}${unit}`;
+  });
 }

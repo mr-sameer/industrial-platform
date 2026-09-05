@@ -18,6 +18,7 @@ import {
 import { FollowUpChips } from "@/components/consult/FollowUpChips";
 import { RecommendationCard } from "@/components/consult/RecommendationCard";
 import { RequirementCard } from "@/components/consult/RequirementCard";
+import { TechnicalUnderstandingCard, type TechnicalUnderstanding } from "@/components/consult/TechnicalUnderstandingCard";
 import { ThinkingIndicator } from "@/components/consult/ThinkingIndicator";
 import { useAuth } from "@/contexts/AuthContext";
 import { cn } from "@/lib/cn";
@@ -26,8 +27,12 @@ import { listCategories, listCategorySpecifications } from "@/lib/products";
 import {
   applyClarifyingAnswer,
   computeConfidence,
+  detectAmbiguousTechnicalMentions,
+  detectUnsupportedTechnicalMentions,
   extractFromText,
+  extractRegionalPreference,
   extractTechnicalCriteria,
+  formatTechnicalCriteria,
   newRequirementObject,
   nextClarifyingField,
   resolveCategoryId,
@@ -170,6 +175,7 @@ function ConsultForm() {
   const [questionsAsked, setQuestionsAsked] = useState(0);
   const [inputValue, setInputValue] = useState("");
   const [matches, setMatches] = useState<RequirementMatchCandidate[] | null>(null);
+  const [technicalUnderstanding, setTechnicalUnderstanding] = useState<TechnicalUnderstanding | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const ranInitialQuery = useRef(false);
@@ -324,21 +330,43 @@ function ConsultForm() {
         ? resolveCategoryId(categoriesResult.data, requirement.productOrCategory.value)
         : null;
 
-      // Technical criteria (Motor Power / Flow Rate / Head — see
-      // lib/requirement.ts's extractTechnicalCriteria) need the
+      // Technical criteria (Motor Power / Flow Rate / Head / Pump Type —
+      // see lib/requirement.ts's extractTechnicalCriteria) need the
       // category's REAL specifications, only knowable once a category
       // has actually resolved; no category means no criteria, never a
       // guess. A specs-fetch failure fails open to no criteria too —
       // the search itself still proceeds on trust/location/certification
       // signals alone, exactly as it always has.
+      //
+      // Real buyer pilot fix: alongside the criteria that DID resolve,
+      // also compute what did NOT reach the backend and why — an
+      // ambiguous mention of a supported spec (detectAmbiguousTechnicalMentions),
+      // a concept ForgeX doesn't model at all (detectUnsupportedTechnicalMentions),
+      // and a multi-state regional preference the single-value
+      // country/state/city filter can never represent
+      // (extractRegionalPreference) — so TechnicalUnderstandingCard can
+      // show the buyer exactly what was and wasn't applied, instead of
+      // a requirement silently vanishing with no trace.
       let technicalCriteria: ReturnType<typeof extractTechnicalCriteria> = [];
+      let ambiguous: string[] = [];
+      let criteriaDisplay: string[] = [];
       if (productCategoryId) {
         const specsResult = await listCategorySpecifications(productCategoryId);
         if (specsResult.success) {
           technicalCriteria = extractTechnicalCriteria(requirement.rawQuery, specsResult.data);
+          ambiguous = detectAmbiguousTechnicalMentions(requirement.rawQuery, specsResult.data).map(
+            (m) => m.specificationName
+          );
+          criteriaDisplay = formatTechnicalCriteria(technicalCriteria, specsResult.data);
         }
       }
       setRequirement((prev) => (prev ? { ...prev, technicalCriteria } : prev));
+      setTechnicalUnderstanding({
+        criteria: criteriaDisplay,
+        ambiguous,
+        unsupported: detectUnsupportedTechnicalMentions(requirement.rawQuery),
+        regionalPreference: extractRegionalPreference(requirement.rawQuery),
+      });
 
       const created = await createRequirement(
         {
@@ -388,6 +416,7 @@ function ConsultForm() {
     setPendingField(null);
     setQuestionsAsked(0);
     setMatches(null);
+    setTechnicalUnderstanding(null);
   }
 
   function handleComposerKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
@@ -463,6 +492,13 @@ function ConsultForm() {
               <FollowUpChips options={["Search now", "Start over"]} onSelect={(v) => (v === "Search now" ? handleSearch() : handleStartOver())} />
             </div>
           )}
+
+          {technicalUnderstanding &&
+            (phase === "results" || phase === "no_results" || phase === "category_required") && (
+              <div className="ml-9">
+                <TechnicalUnderstandingCard understanding={technicalUnderstanding} />
+              </div>
+            )}
 
           {phase === "no_results" && (
             <div className="ml-9 flex flex-col gap-2">
