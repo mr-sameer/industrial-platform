@@ -481,21 +481,30 @@ async def apply_reviewed_field_to_company(
     dispatches on a small, closed, explicitly-reviewed set of
     field_name values — adding a new applyable field means adding a
     new branch here deliberately, never widening a data-driven
-    allowlist. Three branches are plain string Company columns with a
+    allowlist. Five branches are plain string Company columns with a
     real, enforced length bound (description/industry/short_description
-    — unchanged since Module 8B). The 8 ARRAY(String) columns
-    (secondary_industries, product_categories, manufacturing_categories,
-    manufacturing_expertise, capabilities, core_values, export_categories,
-    ai_tags) are reachable too, as of Module 8C, but through a
-    deliberately distinct, append-only branch
+    — unchanged since Module 8B; state/city — added for the pump
+    supplier coverage pilot's location-intelligence activation, same
+    VARCHAR(120) bound as industry, same scalar overwrite semantics,
+    no new column, no new field-name convention). The 8 ARRAY(String)
+    columns (secondary_industries, product_categories,
+    manufacturing_categories, manufacturing_expertise, capabilities,
+    core_values, export_categories, ai_tags) are reachable too, as of
+    Module 8C, but through a deliberately distinct, append-only branch
     (_apply_array_field_to_company) — never the same single-value
-    overwrite semantics as the three scalar fields, and never a
+    overwrite semantics as the five scalar fields, and never a
     destructive replace; see that helper's own docstring for the full
     array-specific rules (exact-match idempotency, list-count cap,
     overwrite=True rejected outright). Identity/legal fields (cin, pan,
-    legal_name, gst_number, ...), Company.status, and
+    legal_name, gst_number, ...), Company.country, Company.status, and
     Company.verification_status are likewise never reachable here —
-    they are not in scope for website-sourced evidence.
+    they are not in scope for website-sourced evidence. Country is
+    deliberately excluded even though state/city are now included: the
+    real pilot evidence found so far only ever states a city/state
+    (e.g. "Pune-411002"), never restates the country on the same
+    letterhead in a form worth a separate provenance row — a future,
+    real, sourced need for it should get its own deliberate branch here
+    too, not a speculative one added ahead of any actual evidence.
     """
     if record.status != ProvenanceStatus.VERIFIED:
         raise RecordNotVerifiedError(
@@ -525,11 +534,17 @@ async def apply_reviewed_field_to_company(
     elif record.field_name == "short_description":
         current_value = company.short_description
         max_length = 500
+    elif record.field_name == "state":
+        current_value = company.state
+        max_length = 120
+    elif record.field_name == "city":
+        current_value = company.city
+        max_length = 120
     else:
         raise FieldNotAllowlistedError(
             f"field_name {record.field_name!r} is not allowlisted for apply-to-company — "
-            "only 'description', 'industry', 'short_description', and the 8 ARRAY(String) "
-            f"fields ({', '.join(sorted(_ARRAY_FIELD_LIMITS))}) are."
+            "only 'description', 'industry', 'short_description', 'state', 'city', and the "
+            f"8 ARRAY(String) fields ({', '.join(sorted(_ARRAY_FIELD_LIMITS))}) are."
         )
 
     if max_length is not None and len(value) > max_length:
@@ -547,8 +562,12 @@ async def apply_reviewed_field_to_company(
         company.description = value
     elif record.field_name == "industry":
         company.industry = value
-    else:
+    elif record.field_name == "short_description":
         company.short_description = value
+    elif record.field_name == "state":
+        company.state = value
+    else:
+        company.city = value
 
     # No dedicated applied_by/applied_at column exists on either model
     # (a confirmed, accepted gap — see Module 8B's architectural

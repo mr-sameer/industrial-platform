@@ -26,6 +26,7 @@ from sqlalchemy import select
 
 from app.collectors.field_profiles import _MANUAL_ENTRY_PROFILE
 from app.db.session import AsyncSessionLocal
+from app.models.audit_log import AuditLog
 from app.models.capability import Capability
 from app.models.company import Company
 from app.models.provenance_record import ProvenanceStatus
@@ -342,6 +343,346 @@ async def test_apply_to_company_conflict_requires_explicit_overwrite(client):
     assert updated["description"] == "A newer, website-sourced description."
     # Only the allowlisted, targeted field changed — nothing else did.
     assert updated["industry"] == "Manufacturing"
+
+
+# --------------------------------------------------------------------------
+# apply_reviewed_field_to_company — state/city (location-intelligence
+# activation pilot). Company.state and Company.city already existed as
+# plain VARCHAR(120) columns and were already read by
+# requirement_matching_service._score_location — this closes the one
+# real gap that pilot found: there was no provenance-preserving way to
+# ever populate them for an already-existing Company. Same scalar
+# overwrite/validation lifecycle as description/industry/
+# short_description above; no new exception type, no new route, no new
+# field-name convention, no widened/data-driven allowlist — just two
+# more explicit branches in the same closed one.
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_apply_city_to_company(client):
+    admin = await _register_admin(client, "apply-city@example.com")
+    company = await _create_company(client, admin, name="Apply City Co", state=None, city=None)
+    assert company["city"] is None
+
+    record = await _create_provenance(
+        client,
+        admin,
+        entity_type="company",
+        entity_id=company["id"],
+        field_name="city",
+        value="Nashik",
+    )
+    await _verify_record(client, admin, record["id"])
+
+    res = await _apply_to_company(client, admin, record["id"], company["id"])
+    assert res.status_code == 200, res.text
+    assert res.json()["data"]["field_name"] == "city"
+
+    updated_res = await client.get(
+        f"/api/v1/companies/{company['id']}", headers=_auth_headers(admin)
+    )
+    updated = updated_res.json()["data"]
+    assert updated["city"] == "Nashik"
+    assert updated["state"] is None  # only the targeted field changed
+
+
+@pytest.mark.asyncio
+async def test_apply_state_to_company(client):
+    admin = await _register_admin(client, "apply-state@example.com")
+    company = await _create_company(client, admin, name="Apply State Co", state=None, city=None)
+    assert company["state"] is None
+
+    record = await _create_provenance(
+        client,
+        admin,
+        entity_type="company",
+        entity_id=company["id"],
+        field_name="state",
+        value="Karnataka",
+    )
+    await _verify_record(client, admin, record["id"])
+
+    res = await _apply_to_company(client, admin, record["id"], company["id"])
+    assert res.status_code == 200, res.text
+    assert res.json()["data"]["field_name"] == "state"
+
+    updated_res = await client.get(
+        f"/api/v1/companies/{company['id']}", headers=_auth_headers(admin)
+    )
+    updated = updated_res.json()["data"]
+    assert updated["state"] == "Karnataka"
+    assert updated["city"] is None  # only the targeted field changed
+
+
+@pytest.mark.asyncio
+async def test_apply_city_requires_verified_status(client):
+    admin = await _register_admin(client, "apply-city-notverified@example.com")
+    company = await _create_company(
+        client, admin, name="Apply City NotVerified Co", state=None, city=None
+    )
+    record = await _create_provenance(
+        client,
+        admin,
+        entity_type="company",
+        entity_id=company["id"],
+        field_name="city",
+        value="Pune",
+        status_value="observed",
+    )
+
+    res = await _apply_to_company(client, admin, record["id"], company["id"])
+    assert res.status_code == 422, res.text
+    assert res.json()["error"]["code"] == "NOT_VERIFIED"
+
+    unchanged_res = await client.get(
+        f"/api/v1/companies/{company['id']}", headers=_auth_headers(admin)
+    )
+    assert unchanged_res.json()["data"]["city"] is None
+
+
+@pytest.mark.asyncio
+async def test_apply_state_rejects_rejected_record(client):
+    admin = await _register_admin(client, "apply-state-rejected@example.com")
+    company = await _create_company(
+        client, admin, name="Apply State Rejected Co", state=None, city=None
+    )
+    record = await _create_provenance(
+        client,
+        admin,
+        entity_type="company",
+        entity_id=company["id"],
+        field_name="state",
+        value="Karnataka",
+    )
+    reject_res = await client.post(
+        f"/api/v1/data-quality/records/{record['id']}/reject",
+        json={"note": "Not a trustworthy source for this pilot."},
+        headers=_auth_headers(admin),
+    )
+    assert reject_res.status_code == 200, reject_res.text
+
+    res = await _apply_to_company(client, admin, record["id"], company["id"])
+    assert res.status_code == 422, res.text
+    assert res.json()["error"]["code"] == "NOT_VERIFIED"
+
+    unchanged_res = await client.get(
+        f"/api/v1/companies/{company['id']}", headers=_auth_headers(admin)
+    )
+    assert unchanged_res.json()["data"]["state"] is None
+
+
+@pytest.mark.asyncio
+async def test_apply_to_company_still_rejects_country_and_other_unrelated_fields(client):
+    """
+    Closed allowlist, not widened wholesale to every location-adjacent
+    field: 'country' is deliberately NOT applyable even though
+    state/city now are (see apply_reviewed_field_to_company's own
+    docstring on why — no real pilot evidence has needed it yet), and a
+    completely unrelated identity field ('cin') must still be rejected
+    exactly as before this change.
+    """
+    admin = await _register_admin(client, "apply-country-notallowed@example.com")
+    company = await _create_company(client, admin, name="Apply Country NotAllowed Co")
+
+    country_record = await _create_provenance(
+        client,
+        admin,
+        entity_type="company",
+        entity_id=company["id"],
+        field_name="country",
+        value="India",
+    )
+    await _verify_record(client, admin, country_record["id"])
+    res = await _apply_to_company(client, admin, country_record["id"], company["id"])
+    assert res.status_code == 422, res.text
+    assert res.json()["error"]["code"] == "FIELD_NOT_ALLOWLISTED"
+
+    cin_record = await _create_provenance(
+        client,
+        admin,
+        entity_type="company",
+        entity_id=company["id"],
+        field_name="cin",
+        value="U12345MH2020PTC000099",
+    )
+    await _verify_record(client, admin, cin_record["id"])
+    res2 = await _apply_to_company(client, admin, cin_record["id"], company["id"])
+    assert res2.status_code == 422, res2.text
+    assert res2.json()["error"]["code"] == "FIELD_NOT_ALLOWLISTED"
+
+
+@pytest.mark.asyncio
+async def test_apply_city_rejects_empty_value(client):
+    admin = await _register_admin(client, "apply-city-empty@example.com")
+    company = await _create_company(
+        client, admin, name="Apply City Empty Co", state=None, city=None
+    )
+    # Whitespace-only, not a literal empty string — value_observed.strip()
+    # still yields "" inside the service, which is exactly what's under test
+    # (mirrors test_apply_to_company_rejects_empty_value's own reasoning).
+    record = await _create_provenance(
+        client,
+        admin,
+        entity_type="company",
+        entity_id=company["id"],
+        field_name="city",
+        value="   ",
+    )
+    await _verify_record(client, admin, record["id"])
+
+    res = await _apply_to_company(client, admin, record["id"], company["id"])
+    assert res.status_code == 422, res.text
+    assert res.json()["error"]["code"] == "EMPTY_VALUE"
+
+
+@pytest.mark.asyncio
+async def test_apply_state_rejects_value_exceeding_column_length(client):
+    admin = await _register_admin(client, "apply-state-toolong@example.com")
+    company = await _create_company(
+        client, admin, name="Apply State TooLong Co", state=None, city=None
+    )
+    record = await _create_provenance(
+        client,
+        admin,
+        entity_type="company",
+        entity_id=company["id"],
+        field_name="state",
+        value="X" * 121,  # Company.state is String(120)
+    )
+    await _verify_record(client, admin, record["id"])
+
+    res = await _apply_to_company(client, admin, record["id"], company["id"])
+    assert res.status_code == 422, res.text
+    assert res.json()["error"]["code"] == "VALUE_TOO_LONG"
+
+    unchanged_res = await client.get(
+        f"/api/v1/companies/{company['id']}", headers=_auth_headers(admin)
+    )
+    assert unchanged_res.json()["data"]["state"] is None
+
+
+@pytest.mark.asyncio
+async def test_apply_city_conflict_requires_explicit_overwrite(client):
+    """
+    _company_payload's own default ("Pune") is the pre-existing,
+    stronger value here — new, different evidence must never silently
+    replace it, exactly the same rule already proven for description
+    (test_apply_to_company_conflict_requires_explicit_overwrite above).
+    """
+    admin = await _register_admin(client, "apply-city-conflict@example.com")
+    company = await _create_company(client, admin, name="Apply City Conflict Co")
+    assert company["city"] == "Pune"
+    assert company["state"] == "Maharashtra"
+
+    record = await _create_provenance(
+        client,
+        admin,
+        entity_type="company",
+        entity_id=company["id"],
+        field_name="city",
+        value="Nashik",
+    )
+    await _verify_record(client, admin, record["id"])
+
+    rejected = await _apply_to_company(client, admin, record["id"], company["id"], overwrite=False)
+    assert rejected.status_code == 409, rejected.text
+    assert rejected.json()["error"]["code"] == "CONFLICTING_VALUE"
+
+    unchanged_res = await client.get(
+        f"/api/v1/companies/{company['id']}", headers=_auth_headers(admin)
+    )
+    assert unchanged_res.json()["data"]["city"] == "Pune"
+
+    accepted = await _apply_to_company(client, admin, record["id"], company["id"], overwrite=True)
+    assert accepted.status_code == 200, accepted.text
+
+    updated_res = await client.get(
+        f"/api/v1/companies/{company['id']}", headers=_auth_headers(admin)
+    )
+    updated = updated_res.json()["data"]
+    assert updated["city"] == "Nashik"
+    assert updated["state"] == "Maharashtra"  # only the targeted field changed
+
+
+@pytest.mark.asyncio
+async def test_apply_city_idempotent_reapply_of_same_value_is_not_a_conflict(client):
+    """
+    Re-applying the identical value (e.g. re-running an idempotent
+    curation script against a company it already touched) must not be
+    treated as a conflict requiring overwrite=True — the existing
+    scalar-field rule (`current_value != value`) already covers this;
+    asserted explicitly here since it matters for exactly the
+    idempotent-curation-script use case this pilot's own scripts rely on.
+    """
+    admin = await _register_admin(client, "apply-city-idempotent@example.com")
+    company = await _create_company(
+        client, admin, name="Apply City Idempotent Co", state=None, city=None
+    )
+    record = await _create_provenance(
+        client,
+        admin,
+        entity_type="company",
+        entity_id=company["id"],
+        field_name="city",
+        value="Nashik",
+    )
+    await _verify_record(client, admin, record["id"])
+    first = await _apply_to_company(client, admin, record["id"], company["id"])
+    assert first.status_code == 200, first.text
+
+    second_record = await _create_provenance(
+        client,
+        admin,
+        entity_type="company",
+        entity_id=company["id"],
+        field_name="city",
+        value="Nashik",
+    )
+    await _verify_record(client, admin, second_record["id"])
+    second = await _apply_to_company(
+        client, admin, second_record["id"], company["id"], overwrite=False
+    )
+    assert second.status_code == 200, second.text
+
+
+@pytest.mark.asyncio
+async def test_apply_state_and_city_preserve_provenance_audit_trail(client):
+    admin = await _register_admin(client, "apply-location-audit@example.com")
+    company = await _create_company(
+        client, admin, name="Apply Location Audit Co", state=None, city=None
+    )
+
+    record = await _create_provenance(
+        client,
+        admin,
+        entity_type="company",
+        entity_id=company["id"],
+        field_name="state",
+        value="Karnataka",
+    )
+    await _verify_record(client, admin, record["id"])
+    res = await _apply_to_company(client, admin, record["id"], company["id"])
+    assert res.status_code == 200, res.text
+    body = res.json()["data"]
+    assert body["field_name"] == "state"
+    assert body["provenance_record"]["review_note"] is not None
+    assert str(admin["user"]["id"]) in body["provenance_record"]["review_note"]
+
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(AuditLog).where(AuditLog.event == "provenance_applied_to_company")
+        )
+        entries = result.scalars().all()
+        matching = [
+            e
+            for e in entries
+            if e.event_metadata
+            and e.event_metadata.get("provenance_record_id") == record["id"]
+            and e.event_metadata.get("field_name") == "state"
+        ]
+        assert len(matching) == 1
+        assert matching[0].event_metadata["company_id"] == company["id"]
 
 
 # --------------------------------------------------------------------------
